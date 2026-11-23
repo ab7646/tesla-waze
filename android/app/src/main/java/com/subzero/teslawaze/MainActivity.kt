@@ -88,6 +88,16 @@ class MainActivity : Activity() {
             setOnClickListener {
                 startService(Intent(this@MainActivity, CaptureService::class.java).setAction(CaptureService.ACTION_STOP))
                 startForegroundService(Intent(this@MainActivity, AaService::class.java))
+                // Android Auto offers no way for other apps to start its head unit server, so if it is
+                // not listening, take the user straight to the screen whose menu starts it.
+                // (The service's first connection attempt tells us; probing the port ourselves could
+                // collide with it.)
+                ui.postDelayed({
+                    if (AaService.serverMissing) {
+                        Toast.makeText(this@MainActivity, "בתפריט שלוש הנקודות בחר Start head unit server, ואז חזור לכאן", Toast.LENGTH_LONG).show()
+                        openAndroidAutoSettings()
+                    }
+                }, 1500)
             }
         })
         root.addView(Button(this).apply {

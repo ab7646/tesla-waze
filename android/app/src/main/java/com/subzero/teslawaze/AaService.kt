@@ -31,6 +31,9 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         private const val MAX_BITRATE = 3_000_000
         @Volatile var running = false
             private set
+        /** True after a connection attempt found Android Auto's head unit server not listening. */
+        @Volatile var serverMissing = false
+            private set
     }
 
     private var relay: RelayClient? = null
@@ -83,10 +86,12 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             try {
                 hu = HeadUnit(HuCert.keyManagers(this), this, full)
                 headUnit = hu
+                serverMissing = false
                 needKey = true
                 hu.run()
                 AppLog.add("החיבור ל-Android Auto הסתיים")
             } catch (e: ConnectException) {
+                serverMissing = true
                 val msg = "Android Auto לא מאזין. בתפריט של Android Auto בחר \"Start head unit server\""
                 if (msg != lastError) AppLog.add(msg)
                 lastError = msg
