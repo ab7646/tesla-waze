@@ -2,7 +2,14 @@ package com.subzero.teslawaze
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
+import android.net.Uri
+import android.text.InputFilter
+import android.text.InputType
+import android.view.Gravity
+import android.widget.EditText
+import android.widget.Toast
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.media.projection.MediaProjectionManager
@@ -43,11 +50,19 @@ class MainActivity : Activity() {
             layoutDirection = View.LAYOUT_DIRECTION_RTL
             setPadding(pad, pad * 2, pad, pad)
         }
+        val shortHost = Uri.parse(BuildConfig.SCREEN_URL).host ?: BuildConfig.SCREEN_URL
         root.addView(label("Waze לטסלה", 26f, bold = true))
-        root.addView(label("פתח את הכתובת הזו בדפדפן של הטסלה פעם אחת, ושמור אותה במועדפים:", 16f))
-        root.addView(label(screenUrl, 14f).apply { setTextIsSelectable(true) })
+        root.addView(label("חיבור ראשון לרכב: בדפדפן של הטסלה הקלד את הכתובת הקצרה, ואז לחץ כאן \"חבר לרכב\" והקלד את הקוד שמופיע שם.", 16f))
+        root.addView(label(shortHost, 22f, bold = true).apply {
+            setTextIsSelectable(true)
+            textDirection = View.TEXT_DIRECTION_LTR
+        })
         root.addView(Button(this).apply {
-            text = "שתף את הכתובת"
+            text = "חבר לרכב (קוד מהטסלה)"
+            setOnClickListener { askPairingCode() }
+        })
+        root.addView(Button(this).apply {
+            text = "שתף כתובת מלאה"
             setOnClickListener {
                 val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, screenUrl)
                 startActivity(Intent.createChooser(send, null))
@@ -85,6 +100,34 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         ui.removeCallbacks(tick)
+    }
+
+    private fun askPairingCode() {
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            filters = arrayOf(InputFilter.LengthFilter(6))
+            hint = "123456"
+            textSize = 28f
+            gravity = Gravity.CENTER
+        }
+        AlertDialog.Builder(this)
+            .setTitle("חיבור לרכב")
+            .setMessage("הקלד את 6 הספרות שמוצגות במסך הטסלה")
+            .setView(input)
+            .setPositiveButton("חבר") { _, _ ->
+                val code = input.text.toString().trim()
+                if (!code.matches(Regex("\\d{6}"))) {
+                    Toast.makeText(this, "הקוד צריך להיות 6 ספרות", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                CaptureService.status = "מתחבר לרכב…"
+                Pairing.pair(this, code) { _, message ->
+                    CaptureService.status = message
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("ביטול", null)
+            .show()
     }
 
     private fun requestCapture() {

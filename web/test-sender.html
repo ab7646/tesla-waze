@@ -16,6 +16,7 @@
 <h2 style="margin:0 0 6px">שולח בדיקה (מחליף את הטלפון)</h2>
 <p class="muted">הדף הזה מדמה את אפליקציית הטלפון: הוא מקודד אנימציה ל-H.264 ושולח אותה דרך הממסר. פתח את קישור המסך במחשב או בטסלה כדי לראות אותה.</p>
 <p>קישור המסך: <a id="screenLink" target="_blank"></a></p>
+<p>חיבור לפי קוד (כמו "חבר לרכב" באפליקציה): <input id="pairCode" inputmode="numeric" maxlength="6" size="7"> <button id="pairBtn">חבר</button> <span id="pairStatus" class="muted"></span></p>
 <p id="status">מתחבר…</p>
 <canvas id="src" width="1280" height="720"></canvas>
 <p class="muted" id="stats"></p>
@@ -93,6 +94,20 @@ setInterval(() => {
   statsEl.textContent = screenPresent ? (sentFrames + ' fps · ' + Math.round(sentBytes * 8 / 1000) + ' kbps') : '';
   sentFrames = 0; sentBytes = 0;
 }, 1000);
+
+document.getElementById('pairBtn').onclick = () => {
+  const code = document.getElementById('pairCode').value.trim();
+  const out = document.getElementById('pairStatus');
+  if (!/^\d{6}$/.test(code)) { out.textContent = 'הקוד צריך להיות 6 ספרות'; return; }
+  out.textContent = 'מתחבר…';
+  const p = new WebSocket(relay + '/room/pair-' + code + '-teslawaze?role=phone');
+  const timer = setTimeout(() => { p.close(); out.textContent = 'הקוד לא נמצא'; }, 10000);
+  p.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'peer' && m.present) p.send(JSON.stringify({ type: 'pair', room }));
+    if (m.type === 'paired') { clearTimeout(timer); p.close(); out.textContent = 'המסך חובר'; }
+  };
+};
 
 if (!relay) statusEl.textContent = 'שרת הממסר לא מוגדר (config.js)';
 else connect();

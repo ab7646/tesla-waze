@@ -4,21 +4,33 @@
 // on the phone, so knowing it is what grants access.
 
 import diagHtml from './diag.html';
+import screenHtml from '../../web/index.html';
+import senderHtml from '../../web/test-sender.html';
 
 const ROOM_RE = /^\/room\/([A-Za-z0-9_-]{16,64})$/;
 const ROLES = ['phone', 'screen'];
 const otherRole = (role) => (role === 'phone' ? 'screen' : 'phone');
 
+const html = (body) => new Response(body, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    // Short, easy-to-type address for the browser diagnostics page (second host besides GitHub Pages).
-    if (url.pathname === '/d' || url.pathname === '/d/') {
-      return new Response(diagHtml, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+    // The worker also serves the pages, so the car only needs to type the short host name.
+    if (request.headers.get('Upgrade') !== 'websocket') {
+      switch (url.pathname) {
+        case '/': case '/index.html': return html(screenHtml);
+        case '/d': case '/d/': return html(diagHtml);
+        case '/test': case '/test-sender.html': return html(senderHtml);
+        case '/config.js':
+          return new Response("window.RELAY_URL = 'wss://' + location.host;\n", {
+            headers: { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' },
+          });
+      }
     }
     const m = url.pathname.match(ROOM_RE);
     if (!m) {
-      return new Response('tesla-waze relay', { status: url.pathname === '/' ? 200 : 404 });
+      return new Response('not found', { status: 404 });
     }
     if (request.headers.get('Upgrade') !== 'websocket') {
       return new Response('expected websocket', { status: 426 });
