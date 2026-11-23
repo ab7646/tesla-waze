@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Waze לטסלה</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; color:#e8ecf1; font:20px/1.5 system-ui, "Segoe UI", Arial, sans-serif; overflow:hidden; }
+  #screen { position:fixed; inset:0; width:100vw; height:100vh; object-fit:contain; touch-action:none; }
+  #overlay { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; text-align:center; padding:24px; background:#0d1117; }
+  #overlay[hidden] { display:none; }
+  #status { font-size:26px; max-width:900px; }
+  #hint { color:#9aa4b2; font-size:18px; max-width:900px; }
+  #stats { position:fixed; bottom:6px; left:10px; font:13px/1.2 Consolas, monospace; color:#9aa4b2; background:rgba(0,0,0,.45); padding:3px 7px; border-radius:6px; direction:ltr; pointer-events:none; }
+  button { font:inherit; padding:12px 26px; border-radius:10px; border:1px solid #2c333d; background:#24406b; color:#fff; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<div id="overlay">
+  <div id="status">מתחבר…</div>
+  <div id="hint"></div>
+  <button id="fsBtn">מסך מלא</button>
+</div>
+<div id="stats"></div>
+
+<script src="config.js"></script>
+<script>
+'use strict';
+// Wire format (binary, phone -> screen):
+//   byte 0      frame type: 1 = codec config (SPS/PPS), 2 = key frame, 3 = delta frame
+//   bytes 1-8   presentation timestamp in microseconds (uint64, big-endian)
+//   bytes 9-10  coded width (uint16), bytes 11-12 coded height (uint16)
+//   bytes 13..  H.264 Annex-B payload (key frames carry SPS/PPS in front)
+// Control messages are JSON text: {type:'peer',present}, {type:'keyframe'}.
+
+const params = new URLSearchParams(location.hash.slice(1));
+const room = params.get('r');
+const relay = (params.get('relay') || window.RELAY_URL || '').replace(/\/$/, '');
+
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const statusEl = document.getElementById('status');
+const hintEl = document.getElementById('hint');
+const statsEl = document.getElementById('stats');
+
+function showStatus(text, hint) {
+  statusEl.textContent = text;
+  hintEl.textContent = hint || '';
+  overlay.hidden = false;
+}
+
+document.getElementById('fsBtn').onclick = () => {
+  if (document.fullscreenEnabled) document.documentElement.requestFullscreen().catch(() => {});
+};
+
+// ---------- H.264 helpers ----------
+function findSps(u8) {
+  for (let i = 0; i + 4 < u8.length; i++) {
+    if (u8[i] === 0 && u8[i + 1] === 0) {
+      let s = -1;
+      if (u8[i + 2] === 1) s = i + 3;
+      else if (u8[i + 2] === 0 && u8[i + 3] === 1) s = i + 4;
+      if (s > 0 && (u8[s] & 0x1f) === 7 && s + 3 < u8.length) return u8.subarray(s + 1, s + 4);
+    }
+  }
+  return null;
+}
+const codecFromSps = (sps) => 'avc1.' + Array.from(sps, (b) => b.toString(16).padStart(2, '0')).join('');
+
+// ---------- decoding ----------
+let decoder = null, curCodec = '', curW = 0, curH = 0, needKey = true;
+let lastKeyAsk = 0, lastFrameAt = 0;
+let stat = { frames: 0, bytes: 0, latencyMs: null };
+
+function askKeyFrame() {
+  const now = performance.now();
+  if (now - lastKeyAsk < 1000) return;
+  lastKeyAsk = now;
+  send({ type: 'keyframe' });
+}
+
+function setupDecoder(codec, w, h) {
+  if (decoder && decoder.state !== 'closed') { try { decoder.close(); } catch {} }
+  decoder = new VideoDecoder({
+    output: (frame) => {
+      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        canvas.width = frame.displayWidth; canvas.height = frame.displayHeight;
+      }
+      ctx.drawImage(frame, 0, 0);
+      frame.close();
+      stat.frames++;
+      lastFrameAt = performance.now();
+      if (!overlay.hidden) overlay.hidden = true;
+    },
+    error: (e) => {
+      showStatus('שגיאה בפענוח הווידאו', e.message);
+      decoder = null; needKey = true; askKeyFrame();
+    },
+  });
+  decoder.configure({ codec, codedWidth: w, codedHeight: h, optimizeForLatency: true });
+  curCodec = codec; curW = w; curH = h; needKey = true;
+}
+
+function onBinary(buf) {
+  const dv = new DataView(buf);
+  const type = dv.getUint8(0);
+  const ts = Number(dv.getBigUint64(1));
+  const w = dv.getUint16(9), h = dv.getUint16(11);
+  const payload = new Uint8Array(buf, 13);
+  stat.bytes += buf.byteLength;
+
+  if (type === 1 || type === 2) {
+    const sps = findSps(payload);
+    if (sps) {
+      const codec = codecFromSps(sps);
+      if (!decoder || decoder.state === 'closed' || codec !== curCodec || w !== curW || h !== curH) setupDecoder(codec, w, h);
+    }
+  }
+  if (type === 1) return;
+  if (!decoder || decoder.state !== 'configured') { askKeyFrame(); return; }
+  if (type === 3 && needKey) { askKeyFrame(); return; }
+  if (decoder.decodeQueueSize > 8) { needKey = true; askKeyFrame(); return; }
+  decoder.decode(new EncodedVideoChunk({ type: type === 2 ? 'key' : 'delta', timestamp: ts, data: payload }));
+  if (type === 2) needKey = false;
+}
+
+// ---------- relay connection ----------
+let ws = null, attempt = 0, phonePresent = false;
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+function connect() {
+  ws = new WebSocket(relay + '/room/' + encodeURIComponent(room) + '?role=screen');
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { attempt = 0; showStatus('מחובר לשרת. ממתין לטלפון…', 'פתח את האפליקציה בטלפון ולחץ "התחל הקרנה".'); };
+  ws.onmessage = (e) => {
+    if (typeof e.data !== 'string') return onBinary(e.data);
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.type === 'peer') {
+      phonePresent = !!m.present;
+      if (phonePresent) { showStatus('הטלפון מחובר. ממתין לווידאו…'); needKey = true; askKeyFrame(); }
+      else showStatus('הטלפון התנתק. ממתין שיחזור…', 'ההקרנה תחזור אוטומטית.');
+    }
+  };
+  ws.onclose = () => {
+    phonePresent = false;
+    const delay = Math.min(30, 2 ** Math.min(attempt++, 5));
+    showStatus('אין חיבור לשרת. מנסה שוב בעוד ' + delay + ' שניות…');
+    setTimeout(connect, delay * 1000);
+  };
+}
+
+setInterval(() => {
+  const kbps = Math.round(stat.bytes * 8 / 1000);
+  statsEl.textContent = phonePresent ? (stat.frames + ' fps · ' + kbps + ' kbps') : '';
+  stat.frames = 0; stat.bytes = 0;
+  if (phonePresent && overlay.hidden && performance.now() - lastFrameAt > 3000) {
+    showStatus('הווידאו נעצר. ממתין…', 'אם המסך בטלפון כבוי או נעול, השידור מושהה.');
+    needKey = true; askKeyFrame();
+  }
+}, 1000);
+
+// ---------- start ----------
+if (!room) {
+  showStatus('חסר מזהה חיבור בכתובת', 'פתח את הכתובת שמופיעה באפליקציה בטלפון (היא מסתיימת ב-#r=…), ושמור אותה במועדפים.');
+} else if (!relay) {
+  showStatus('שרת הממסר לא מוגדר', 'הקובץ config.js חסר או ריק.');
+} else if (!('VideoDecoder' in window)) {
+  showStatus('הדפדפן הזה לא תומך ב-WebCodecs', 'נדרש דפדפן מבוסס Chromium בגרסה עדכנית.');
+} else {
+  connect();
+}
+</script>
+</body>
+</html>

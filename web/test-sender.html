@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>שולח בדיקה – Waze לטסלה</title>
+<style>
+  body { margin:0; background:#111418; color:#e8ecf1; font:18px/1.5 system-ui, "Segoe UI", Arial, sans-serif; padding:16px 20px; }
+  canvas { width:100%; max-width:640px; aspect-ratio:16/9; background:#000; border-radius:8px; display:block; margin:12px 0; }
+  a { color:#58a6ff; word-break:break-all; }
+  .muted { color:#9aa4b2; font-size:15px; }
+  #status { font-weight:600; }
+</style>
+</head>
+<body>
+<h2 style="margin:0 0 6px">שולח בדיקה (מחליף את הטלפון)</h2>
+<p class="muted">הדף הזה מדמה את אפליקציית הטלפון: הוא מקודד אנימציה ל-H.264 ושולח אותה דרך הממסר. פתח את קישור המסך במחשב או בטסלה כדי לראות אותה.</p>
+<p>קישור המסך: <a id="screenLink" target="_blank"></a></p>
+<p id="status">מתחבר…</p>
+<canvas id="src" width="1280" height="720"></canvas>
+<p class="muted" id="stats"></p>
+
+<script src="config.js"></script>
+<script>
+'use strict';
+const params = new URLSearchParams(location.hash.slice(1));
+const relay = (params.get('relay') || window.RELAY_URL || '').replace(/\/$/, '');
+let room = params.get('r');
+if (!room) {
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  room = btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  params.set('r', room);
+  history.replaceState(null, '', '#' + params.toString());
+}
+const screenParams = new URLSearchParams({ r: room });
+if (params.get('relay')) screenParams.set('relay', params.get('relay'));
+const screenUrl = new URL('index.html#' + screenParams.toString(), location.href).href;
+const link = document.getElementById('screenLink');
+link.href = screenUrl; link.textContent = screenUrl;
+
+const statusEl = document.getElementById('status');
+const statsEl = document.getElementById('stats');
+const cv = document.getElementById('src'), ctx = cv.getContext('2d');
+let ws = null, screenPresent = false, forceKey = true, n = 0, sentFrames = 0, sentBytes = 0;
+
+function connect() {
+  ws = new WebSocket(relay + '/room/' + encodeURIComponent(room) + '?role=phone');
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { statusEl.textContent = 'מחובר לשרת. ממתין למסך…'; };
+  ws.onmessage = (e) => {
+    if (typeof e.data !== 'string') return;
+    const m = JSON.parse(e.data);
+    if (m.type === 'peer') { screenPresent = m.present; forceKey = true; statusEl.textContent = m.present ? 'המסך מחובר. משדר.' : 'ממתין למסך…'; }
+    if (m.type === 'keyframe') forceKey = true;
+  };
+  ws.onclose = () => { screenPresent = false; statusEl.textContent = 'החיבור נסגר. מנסה שוב…'; setTimeout(connect, 2000); };
+}
+
+function packet(type, tsUs, w, h, data) {
+  const buf = new ArrayBuffer(13 + data.byteLength);
+  const dv = new DataView(buf);
+  dv.setUint8(0, type); dv.setBigUint64(1, BigInt(tsUs)); dv.setUint16(9, w); dv.setUint16(11, h);
+  new Uint8Array(buf, 13).set(data);
+  return buf;
+}
+
+const enc = new VideoEncoder({
+  output: (chunk) => {
+    if (!screenPresent || !ws || ws.readyState !== 1) return;
+    const data = new Uint8Array(chunk.byteLength); chunk.copyTo(data);
+    const pkt = packet(chunk.type === 'key' ? 2 : 3, chunk.timestamp, 1280, 720, data);
+    ws.send(pkt); sentFrames++; sentBytes += pkt.byteLength;
+  },
+  error: (e) => { statusEl.textContent = 'שגיאת קידוד: ' + e.message; },
+});
+enc.configure({ codec: 'avc1.42E01F', width: 1280, height: 720, bitrate: 2_000_000, framerate: 30, latencyMode: 'realtime', avc: { format: 'annexb' } });
+
+setInterval(() => {
+  const t = performance.now();
+  ctx.fillStyle = '#0d1b2a'; ctx.fillRect(0, 0, 1280, 720);
+  ctx.fillStyle = '#33ccff'; ctx.beginPath(); ctx.arc((Math.sin(t / 700) * 0.4 + 0.5) * 1280, 360, 100, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 80px system-ui'; ctx.textAlign = 'center';
+  ctx.fillText(new Date().toLocaleTimeString('he-IL') + '.' + String(Math.floor(t % 1000)).padStart(3, '0'), 640, 620);
+  ctx.font = '48px system-ui'; ctx.fillText('שולח בדיקה', 640, 100);
+  if (enc.encodeQueueSize > 2) return;
+  const frame = new VideoFrame(cv, { timestamp: Math.round(t * 1000) });
+  enc.encode(frame, { keyFrame: forceKey || n++ % 60 === 0 });
+  forceKey = false;
+  frame.close();
+}, 33);
+
+setInterval(() => {
+  statsEl.textContent = screenPresent ? (sentFrames + ' fps · ' + Math.round(sentBytes * 8 / 1000) + ' kbps') : '';
+  sentFrames = 0; sentBytes = 0;
+}, 1000);
+
+if (!relay) statusEl.textContent = 'שרת הממסר לא מוגדר (config.js)';
+else connect();
+</script>
+</body>
+</html>
