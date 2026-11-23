@@ -41,6 +41,8 @@ class H264Encoder(
             // Keep frames flowing when the screen is static, so the car view never freezes.
             setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000L)
             setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            // The S24 screen runs at up to 120 Hz; navigation needs no more than 30 fps.
+            setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, 30f)
         }
         try {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)

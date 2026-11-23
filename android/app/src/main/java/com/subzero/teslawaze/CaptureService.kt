@@ -37,7 +37,9 @@ class CaptureService : Service(), RelayClient.Listener {
         private const val MAX_SIDE = 1280
         private const val MAX_QUEUE_BYTES = 768L * 1024
 
-        @Volatile var status: String = "מוכן"
+        var status: String
+            get() = AppLog.status
+            set(value) { AppLog.status = value }
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -53,7 +55,8 @@ class CaptureService : Service(), RelayClient.Listener {
     private val statsTick = object : Runnable {
         override fun run() {
             if (screenPresent) {
-                status = "משדר לטסלה · $sentFrames fps · ${sentBytes * 8 / 1000} kbps"
+                // ⁦…⁩ isolates the left-to-right numbers inside the Hebrew line.
+                status = "משדר לטסלה: ⁦$sentFrames fps · ${sentBytes * 8 / 1000} kbps⁩"
             }
             sentFrames = 0
             sentBytes = 0

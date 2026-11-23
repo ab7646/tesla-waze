@@ -17,7 +17,9 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.View
+import com.subzero.teslawaze.aa.HuCert
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -25,10 +27,14 @@ import android.widget.TextView
 
 class MainActivity : Activity() {
     private lateinit var status: TextView
+    private lateinit var certInfo: TextView
+    private lateinit var log: TextView
     private val ui = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
-            status.text = CaptureService.status
+            status.text = AppLog.status
+            log.text = AppLog.text()
+            certInfo.text = HuCert.describe(this@MainActivity)?.let { "תעודה טעונה: $it" } ?: "לא נטענה תעודת יחידת ראש"
             ui.postDelayed(this, 500)
         }
     }
@@ -61,6 +67,51 @@ class MainActivity : Activity() {
             text = "חבר לרכב (קוד מהטסלה)"
             setOnClickListener { askPairingCode() }
         })
+        status = label("", 16f, bold = true)
+        root.addView(status)
+
+        // ---- Android Auto mode: Waze runs in the background, the phone stays free ----
+        root.addView(label("מצב אנדרואיד אוטו (Waze ברקע)", 20f, bold = true))
+        certInfo = label("", 14f)
+        root.addView(certInfo)
+        root.addView(Button(this).apply {
+            text = "טען תעודת יחידת ראש (קובץ PEM)"
+            setOnClickListener { pickCertificate() }
+        })
+        root.addView(Button(this).apply {
+            text = "פתח הגדרות Android Auto"
+            setOnClickListener { openAndroidAutoSettings() }
+        })
+        root.addView(label("לפני ההפעלה: ב-Android Auto, בתפריט שלוש הנקודות, בחר \"Start head unit server\".", 14f))
+        root.addView(Button(this).apply {
+            text = "התחל מצב אנדרואיד אוטו"
+            setOnClickListener {
+                startService(Intent(this@MainActivity, CaptureService::class.java).setAction(CaptureService.ACTION_STOP))
+                startForegroundService(Intent(this@MainActivity, AaService::class.java))
+            }
+        })
+        root.addView(Button(this).apply {
+            text = "עצור מצב אנדרואיד אוטו"
+            setOnClickListener {
+                startService(Intent(this@MainActivity, AaService::class.java).setAction(AaService.ACTION_STOP))
+            }
+        })
+
+        // ---- Mirror mode (fallback) ----
+        root.addView(label("שיקוף מסך (גיבוי)", 20f, bold = true))
+        root.addView(Button(this).apply {
+            text = "התחל שיקוף מסך"
+            setOnClickListener {
+                startService(Intent(this@MainActivity, AaService::class.java).setAction(AaService.ACTION_STOP))
+                requestCapture()
+            }
+        })
+        root.addView(Button(this).apply {
+            text = "עצור שיקוף"
+            setOnClickListener {
+                startService(Intent(this@MainActivity, CaptureService::class.java).setAction(CaptureService.ACTION_STOP))
+            }
+        })
         root.addView(Button(this).apply {
             text = "שתף כתובת מלאה"
             setOnClickListener {
@@ -68,18 +119,13 @@ class MainActivity : Activity() {
                 startActivity(Intent.createChooser(send, null))
             }
         })
-        root.addView(Button(this).apply {
-            text = "התחל הקרנה"
-            setOnClickListener { requestCapture() }
-        })
-        root.addView(Button(this).apply {
-            text = "עצור"
-            setOnClickListener {
-                startService(Intent(this@MainActivity, CaptureService::class.java).setAction(CaptureService.ACTION_STOP))
-            }
-        })
-        status = label("", 16f)
-        root.addView(status)
+
+        root.addView(label("יומן", 16f, bold = true))
+        log = label("", 12f).apply {
+            setTextIsSelectable(true)
+            typeface = Typeface.MONOSPACE
+        }
+        root.addView(log)
         if (BuildConfig.RELAY_URL.isEmpty()) root.addView(label("שים לב: בבנייה הזו לא הוגדר שרת ממסר (RELAY_URL).", 14f))
         root.addView(label("גרסה ${BuildConfig.VERSION_NAME}", 12f))
 
@@ -130,6 +176,23 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun pickCertificate() {
+        val pick = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+        @Suppress("DEPRECATION")
+        startActivityForResult(pick, REQ_CERT)
+    }
+
+    private fun openAndroidAutoSettings() {
+        val pkg = "com.google.android.projection.gearhead"
+        val launch = packageManager.getLaunchIntentForPackage(pkg)
+            ?: Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg"))
+        try {
+            startActivity(launch)
+        } catch (e: Exception) {
+            Toast.makeText(this, "לא נמצאה אפליקציית Android Auto", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun requestCapture() {
         val mpm = getSystemService(MediaProjectionManager::class.java)
         @Suppress("DEPRECATION")
@@ -140,6 +203,18 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_CERT) {
+            val uri = data?.data ?: return
+            try {
+                val subject = HuCert.import(this, uri)
+                AppLog.add("התעודה נטענה: $subject")
+                Toast.makeText(this, "התעודה נטענה", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                AppLog.add("טעינת התעודה נכשלה: ${e.message}")
+                Toast.makeText(this, "טעינת התעודה נכשלה: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
         if (requestCode != REQ_CAPTURE) return
         if (resultCode == RESULT_OK && data != null) {
             startForegroundService(
@@ -154,5 +229,6 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQ_CAPTURE = 42
+        private const val REQ_CERT = 43
     }
 }
