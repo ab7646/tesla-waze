@@ -190,14 +190,30 @@ class MainActivity : Activity() {
     }
 
     private fun openAndroidAutoSettings() {
+        // Android Auto has no launcher icon on Android 10+; its own settings screen (with the
+        // three-dot menu holding "Start head unit server") is found by its intent or activity name.
         val pkg = "com.google.android.projection.gearhead"
-        val launch = packageManager.getLaunchIntentForPackage(pkg)
-            ?: Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg"))
+        val candidates = mutableListOf<Intent>()
+        candidates += Intent(Intent.ACTION_APPLICATION_PREFERENCES).setPackage(pkg)
         try {
-            startActivity(launch)
-        } catch (e: Exception) {
-            Toast.makeText(this, "לא נמצאה אפליקציית Android Auto", Toast.LENGTH_LONG).show()
+            @Suppress("DEPRECATION")
+            val info = packageManager.getPackageInfo(pkg, PackageManager.GET_ACTIVITIES)
+            info.activities.orEmpty()
+                .filter { it.exported && it.name.contains("settings", ignoreCase = true) }
+                .sortedBy { a -> if (a.name.endsWith(".SettingsActivity")) 0 else if (a.name.endsWith("SettingsActivity")) 1 else 2 }
+                .forEach { candidates += Intent().setClassName(pkg, it.name) }
+        } catch (_: Exception) {}
+        packageManager.getLaunchIntentForPackage(pkg)?.let { candidates += it }
+        candidates += Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg"))
+
+        for (intent in candidates) {
+            try {
+                startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                AppLog.add("נפתח: ${intent.component?.className ?: intent.action}")
+                return
+            } catch (_: Exception) {}
         }
+        Toast.makeText(this, "לא נמצאה אפליקציית Android Auto", Toast.LENGTH_LONG).show()
     }
 
     private fun requestCapture() {
