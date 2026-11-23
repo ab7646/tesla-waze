@@ -68,9 +68,13 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     /** Keeps (re)connecting to Android Auto's head unit server while the service runs. */
     private fun loop() {
         var lastError = ""
+        // Android Auto dropped the minimal car description (video + touch + sensors only), so
+        // start with the full one that real head units send; if that is rejected too, alternate.
+        var full = true
         while (running) {
+            var hu: HeadUnit? = null
             try {
-                val hu = HeadUnit(HuCert.keyManagers(this), this)
+                hu = HeadUnit(HuCert.keyManagers(this), this, full)
                 headUnit = hu
                 codecConfig = null
                 needKey = true
@@ -90,6 +94,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
                 headUnit?.close()
                 headUnit = null
             }
+            if (hu != null && hu.sdSent && hu.channelsOpened == 0) full = !full
             if (running) try { Thread.sleep(3000) } catch (_: InterruptedException) { break }
         }
     }

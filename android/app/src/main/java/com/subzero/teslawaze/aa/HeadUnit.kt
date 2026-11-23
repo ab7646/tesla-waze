@@ -1,6 +1,7 @@
 package com.subzero.teslawaze.aa
 
 import android.annotation.SuppressLint
+import android.media.AudioAttributes
 import com.subzero.teslawaze.AppLog
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -28,7 +29,12 @@ import javax.net.ssl.X509TrustManager
  * payload is [message id:2][protobuf or raw body]. After the TLS handshake (carried inside
  * control messages) every frame payload is TLS-encrypted on its own.
  */
-class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener: Listener) {
+/** full: also declare audio sinks, a microphone and media status, like real head units do. */
+class HeadUnit(
+    private val keyManagers: Array<KeyManager>,
+    private val listener: Listener,
+    private val full: Boolean,
+) {
 
     interface Listener {
         fun onVideoConfig(data: ByteArray)
@@ -44,6 +50,19 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
         private const val CH_INPUT = 1
         private const val CH_SENSOR = 2
         private const val CH_VIDEO = 3
+        private const val CH_MEDIA_AUDIO = 4
+        private const val CH_SPEECH_AUDIO = 5
+        private const val CH_SYSTEM_AUDIO = 6
+        private const val CH_MIC = 7
+        private const val CH_MEDIA_STATUS = 8
+
+        private const val STREAM_AUDIO = 1
+        private const val STREAM_VIDEO = 3
+        private const val AUDIO_SPEECH = 1
+        private const val AUDIO_SYSTEM = 2
+        private const val AUDIO_MEDIA = 3
+        private const val MIC_OPEN_REQUEST = 0x8005
+        private const val MIC_OPEN_RESPONSE = 0x8006
 
         // Frame flags
         private const val FRAME_MIDDLE = 0
@@ -118,6 +137,13 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
     @Volatile private var inputReady = false
     @Volatile private var lastFocusToggle = 0L
     private var traced = 0
+    /** For the caller's diagnosis: did we send service discovery, and did any channel open after it. */
+    @Volatile var sdSent = false
+        private set
+    @Volatile var channelsOpened = 0
+        private set
+    private val audio = HashMap<Int, AudioOut>()
+    private val audioSession = HashMap<Int, Int>()
 
     /** Connects and runs the protocol until the connection ends. Blocking; call from a worker thread. */
     fun run() {
@@ -125,7 +151,7 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
         socket.connect(InetSocketAddress("127.0.0.1", PORT), 3000)
         input = DataInputStream(BufferedInputStream(socket.getInputStream(), 1 shl 16))
         output = socket.getOutputStream()
-        AppLog.add("מחובר ל-Android Auto, מתחיל לחיצת יד")
+        AppLog.add("מחובר ל-Android Auto, מתחיל לחיצת יד (תיאור רכב ${if (full) "מלא, עם שמע ומיקרופון" else "מינימלי"})")
 
         send(CH_CONTROL, false, VERSION_REQUEST, byteArrayOf(0, 1, 0, 1))
         val version = readMessage()
@@ -153,6 +179,10 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
     fun close() {
         running = false
         try { socket.close() } catch (_: Exception) {}
+        synchronized(audio) {
+            audio.values.forEach { it.release() }
+            audio.clear()
+        }
     }
 
     /** Android Auto only sends an IDR at stream start, so re-taking video focus forces a fresh one. */
@@ -180,6 +210,7 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
     private fun handle(m: Message) {
         if (m.channel != CH_CONTROL && m.control && m.id == CHANNEL_OPEN_REQUEST) {
             send(m.channel, true, CHANNEL_OPEN_RESPONSE, Pb().varint(1, 0).toByteArray())
+            channelsOpened++
             AppLog.add("ערוץ ${m.channel} נפתח")
             return
         }
@@ -196,7 +227,54 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
                 send(CH_SENSOR, false, SENSOR_START_RESPONSE, Pb().varint(1, 0).toByteArray())
                 sendSensor(type)
             }
+            CH_MEDIA_AUDIO, CH_SPEECH_AUDIO, CH_SYSTEM_AUDIO -> handleAudio(m)
+            CH_MIC -> handleMic(m)
+            CH_MEDIA_STATUS -> Unit // now-playing info; not shown
             else -> AppLog.add("הודעה לא מוכרת בערוץ ${m.channel}: ${hex(m.id)}")
+        }
+    }
+
+    private fun audioOut(channel: Int): AudioOut = synchronized(audio) {
+        audio.getOrPut(channel) {
+            when (channel) {
+                CH_MEDIA_AUDIO -> AudioOut(48000, 2, AudioAttributes.USAGE_MEDIA)
+                CH_SPEECH_AUDIO -> AudioOut(16000, 1, AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                else -> AudioOut(16000, 1, AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            }
+        }
+    }
+
+    private fun handleAudio(m: Message) {
+        when (m.id) {
+            MEDIA_WITH_TIMESTAMP, MEDIA_CODEC_CONFIG -> {
+                // 0x0000 carries an 8-byte timestamp before the PCM; 0x0001 is PCM alone.
+                val offset = if (m.id == MEDIA_WITH_TIMESTAMP) 8 else 0
+                if (m.body.size > offset) audioOut(m.channel).write(m.body, offset)
+                val session = audioSession[m.channel] ?: 0
+                send(m.channel, false, AV_MEDIA_ACK, Pb().varint(1, session).varint(2, 1).toByteArray())
+            }
+            AV_SETUP_REQUEST ->
+                send(m.channel, false, AV_SETUP_RESPONSE, Pb().varint(1, 2).varint(2, 10).varint(3, 0).toByteArray())
+            AV_START -> {
+                audioSession[m.channel] = Pb.parse(m.body).int(1) ?: 0
+                audioOut(m.channel).start()
+            }
+            AV_STOP -> audioOut(m.channel).stop()
+            else -> AppLog.add("הודעת שמע לא מוכרת בערוץ ${m.channel}: ${hex(m.id)}")
+        }
+    }
+
+    /** We have no microphone to offer; accept the requests so Android Auto keeps going. */
+    private fun handleMic(m: Message) {
+        when (m.id) {
+            AV_SETUP_REQUEST ->
+                send(CH_MIC, false, AV_SETUP_RESPONSE, Pb().varint(1, 2).varint(2, 10).varint(3, 0).toByteArray())
+            MIC_OPEN_REQUEST -> {
+                send(CH_MIC, false, MIC_OPEN_RESPONSE, Pb().varint(1, 0).varint(2, 0).toByteArray())
+                AppLog.add("Android Auto ביקש מיקרופון (אין לנו, ממשיכים בלעדיו)")
+            }
+            AV_MEDIA_ACK -> Unit
+            else -> AppLog.add("הודעת מיקרופון לא מוכרת: ${hex(m.id)}")
         }
     }
 
@@ -207,6 +285,7 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
                 AppLog.add("Android Auto מבקש פרטי רכב: $req")
                 val resp = serviceDiscoveryResponse()
                 send(CH_CONTROL, false, SERVICE_DISCOVERY_RESPONSE, resp)
+                sdSent = true
                 AppLog.add("נשלחו פרטי הרכב (${resp.size}B), ממתין לפתיחת ערוצים")
             }
             PING_REQUEST -> {
@@ -215,11 +294,12 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
             }
             NAV_FOCUS_REQUEST -> send(CH_CONTROL, false, NAV_FOCUS_RESPONSE, Pb().varint(1, 2).toByteArray())
             AUDIO_FOCUS_REQUEST -> {
-                // 1 gain, 2 gain transient, 3 gain navigation, 4 release -> 1 gain, 2 transient, 3 loss
+                // Request: 1 gain, 2 gain transient, 3 gain navigation, 4 release.
+                // Response (as openauto answers): 1 gain, 2 gain transient, 3 loss.
                 val state = when (Pb.parse(m.body).int(1)) {
-                    1 -> 1
-                    2, 3 -> 2
-                    else -> 3
+                    4 -> 3
+                    2 -> 2
+                    else -> 1
                 }
                 send(CH_CONTROL, false, AUDIO_FOCUS_RESPONSE, Pb().varint(1, state).toByteArray())
             }
@@ -284,7 +364,8 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
         val video = Pb()
             .varint(1, CH_VIDEO)
             .msg(3, Pb()
-                .varint(1, 3) // stream type: video
+                .varint(1, STREAM_VIDEO)
+                .apply { if (full) varint(2, AUDIO_SYSTEM) } // real head units set this too
                 .msg(4, Pb()
                     .varint(1, 2) // 1280x720
                     .varint(2, 1) // 30 fps
@@ -299,8 +380,24 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
             .msg(2, Pb()
                 .msg(1, Pb().varint(1, SENSOR_DRIVING_STATUS))
                 .msg(1, Pb().varint(1, SENSOR_NIGHT)))
-        return Pb()
-            .msg(1, video).msg(1, touch).msg(1, sensors)
+        val out = Pb().msg(1, video).msg(1, touch).msg(1, sensors)
+        if (full) {
+            fun audioSink(ch: Int, type: Int, rate: Int, channels: Int) = Pb()
+                .varint(1, ch)
+                .msg(3, Pb()
+                    .varint(1, STREAM_AUDIO)
+                    .varint(2, type)
+                    .msg(3, Pb().varint(1, rate).varint(2, 16).varint(3, channels))
+                    .bool(5, true))
+            out.msg(1, audioSink(CH_MEDIA_AUDIO, AUDIO_MEDIA, 48000, 2))
+            out.msg(1, audioSink(CH_SPEECH_AUDIO, AUDIO_SPEECH, 16000, 1))
+            out.msg(1, audioSink(CH_SYSTEM_AUDIO, AUDIO_SYSTEM, 16000, 1))
+            out.msg(1, Pb().varint(1, CH_MIC).msg(5, Pb()
+                .varint(1, STREAM_AUDIO)
+                .msg(2, Pb().varint(1, 16000).varint(2, 16).varint(3, 1))))
+            out.msg(1, Pb().varint(1, CH_MEDIA_STATUS).msg(9, Pb()))
+        }
+        return out
             .string(2, "Tesla Bridge")
             .string(3, "Model Y")
             .string(4, "2024")
