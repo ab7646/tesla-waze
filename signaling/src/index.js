@@ -3,6 +3,8 @@
 // messages go both ways. The room id is a 128-bit random secret generated
 // on the phone, so knowing it is what grants access.
 
+import diagHtml from './diag.html';
+
 const ROOM_RE = /^\/room\/([A-Za-z0-9_-]{16,64})$/;
 const ROLES = ['phone', 'screen'];
 const otherRole = (role) => (role === 'phone' ? 'screen' : 'phone');
@@ -10,6 +12,10 @@ const otherRole = (role) => (role === 'phone' ? 'screen' : 'phone');
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    // Short, easy-to-type address for the browser diagnostics page (second host besides GitHub Pages).
+    if (url.pathname === '/d' || url.pathname === '/d/') {
+      return new Response(diagHtml, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+    }
     const m = url.pathname.match(ROOM_RE);
     if (!m) {
       return new Response('tesla-waze relay', { status: url.pathname === '/' ? 200 : 404 });
