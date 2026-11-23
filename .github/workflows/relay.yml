@@ -1,9 +1,9 @@
 name: Relay worker
 
+# Manual only: the relay is normally deployed from a dev machine with `npx wrangler deploy`
+# (signaling/). Running this workflow needs the CLOUDFLARE_API_TOKEN and
+# CLOUDFLARE_ACCOUNT_ID repo secrets.
 on:
-  push:
-    branches: [main]
-    paths: ['signaling/**', '.github/workflows/relay.yml']
   workflow_dispatch:
 
 jobs:
