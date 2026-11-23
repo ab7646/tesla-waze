@@ -83,9 +83,9 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
                 AppLog.status = msg
             } catch (e: Exception) {
                 if (!running) break
-                val msg = "שגיאה: ${e.javaClass.simpleName}: ${e.message}"
-                if (msg != lastError) AppLog.add(msg)
-                lastError = msg
+                val cause = e.cause?.let { " ← ${it.javaClass.simpleName}: ${it.message}" } ?: ""
+                AppLog.add("שגיאה: ${e.javaClass.simpleName}: ${e.message}$cause")
+                lastError = ""
             } finally {
                 headUnit?.close()
                 headUnit = null

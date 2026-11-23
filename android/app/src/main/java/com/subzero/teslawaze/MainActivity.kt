@@ -121,6 +121,13 @@ class MainActivity : Activity() {
         })
 
         root.addView(label("יומן", 16f, bold = true))
+        root.addView(Button(this).apply {
+            text = "שתף את היומן"
+            setOnClickListener {
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, AppLog.text())
+                startActivity(Intent.createChooser(send, null))
+            }
+        })
         log = label("", 12f).apply {
             setTextIsSelectable(true)
             typeface = Typeface.MONOSPACE

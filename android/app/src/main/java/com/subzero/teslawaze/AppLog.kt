@@ -16,7 +16,7 @@ object AppLog {
         Log.i("TeslaWaze", message)
         synchronized(lines) {
             lines.addLast("${time.format(Date())}  $message")
-            while (lines.size > 40) lines.removeFirst()
+            while (lines.size > 150) lines.removeFirst()
         }
     }
 

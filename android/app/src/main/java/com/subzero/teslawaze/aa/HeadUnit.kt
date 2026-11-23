@@ -117,6 +117,7 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
     @Volatile private var videoStarted = false
     @Volatile private var inputReady = false
     @Volatile private var lastFocusToggle = 0L
+    private var traced = 0
 
     /** Connects and runs the protocol until the connection ends. Blocking; call from a worker thread. */
     fun run() {
@@ -139,7 +140,14 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
         encrypted = true
         AppLog.add("לחיצת יד TLS הושלמה, Android Auto קיבל את התעודה")
 
-        while (running) handle(readMessage())
+        while (running) {
+            val m = readMessage()
+            if (traced < 40) {
+                traced++
+                AppLog.add("← ערוץ ${m.channel} ${hex(m.id)} (${m.body.size}B)")
+            }
+            handle(m)
+        }
     }
 
     fun close() {
@@ -196,8 +204,10 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
         when (m.id) {
             SERVICE_DISCOVERY_REQUEST -> {
                 val req = Pb.parse(m.body)
-                AppLog.add("Android Auto מבקש פרטי רכב (${req.string(4) ?: req.string(1) ?: "טלפון"})")
-                send(CH_CONTROL, false, SERVICE_DISCOVERY_RESPONSE, serviceDiscoveryResponse())
+                AppLog.add("Android Auto מבקש פרטי רכב: $req")
+                val resp = serviceDiscoveryResponse()
+                send(CH_CONTROL, false, SERVICE_DISCOVERY_RESPONSE, resp)
+                AppLog.add("נשלחו פרטי הרכב (${resp.size}B), ממתין לפתיחת ערוצים")
             }
             PING_REQUEST -> {
                 val ts = Pb.parse(m.body).long(1) ?: 0L
@@ -403,6 +413,7 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
                     if (r.bytesConsumed() == 0) break
                 }
                 SSLEngineResult.Status.BUFFER_OVERFLOW -> app = ByteBuffer.allocate(app.capacity() * 2)
+                SSLEngineResult.Status.CLOSED -> error("Android Auto סגר את ערוץ ה-TLS (close_notify)")
                 else -> error("TLS decrypt: ${r.status}")
             }
         }
@@ -436,7 +447,11 @@ class HeadUnit(private val keyManagers: Array<KeyManager>, private val listener:
 
     private fun readMessage(): Message {
         while (true) {
-            val channel = input.readUnsignedByte()
+            val channel = try {
+                input.readUnsignedByte()
+            } catch (e: java.io.EOFException) {
+                error("Android Auto סגר את החיבור (בלי הודעת סיום)")
+            }
             val flags = input.readUnsignedByte()
             val type = flags and 3
             val size = input.readUnsignedShort()
