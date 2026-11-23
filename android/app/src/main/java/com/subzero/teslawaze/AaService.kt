@@ -121,6 +121,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         if (needKey) return
         if (r.queued() > MAX_QUEUE_BYTES) {
             needKey = true
+            AppLog.add("החיבור לרכב איטי, מדלג על תמונות")
             headUnit?.requestKeyFrame()
             return
         }
@@ -175,7 +176,10 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
 
     override fun onControl(message: JSONObject) {
         when (message.optString("type")) {
-            "keyframe" -> headUnit?.requestKeyFrame()
+            "keyframe" -> {
+                AppLog.add("המסך ביקש תמונה מלאה")
+                headUnit?.requestKeyFrame()
+            }
             "touch" -> {
                 val hu = headUnit ?: return
                 val arr = message.optJSONArray("p") ?: return

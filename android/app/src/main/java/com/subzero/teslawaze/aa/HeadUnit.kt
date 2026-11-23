@@ -368,7 +368,7 @@ class HeadUnit(
                 .apply { if (full) varint(2, AUDIO_SYSTEM) } // real head units set this too
                 .msg(4, Pb()
                     .varint(1, 2) // 1280x720
-                    .varint(2, 1) // 30 fps
+                    .varint(2, 2) // frame rate enum: 1 = 60 fps, 2 = 30 fps (30 halves the data over LTE)
                     .varint(3, 0).varint(4, 0) // margins
                     .varint(5, 160)) // dpi
                 .bool(5, true)) // available while in call

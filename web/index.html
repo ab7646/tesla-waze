@@ -141,7 +141,8 @@ function onBinary(buf) {
   if (type === 1) return;
   if (!decoder || decoder.state !== 'configured') { askKeyFrame(); return; }
   if (type === 3 && needKey) { askKeyFrame(); return; }
-  if (decoder.decodeQueueSize > 8) { needKey = true; askKeyFrame(); return; }
+  // Network bursts can deliver many frames at once; the decoder catches up, so only drop when far behind.
+  if (decoder.decodeQueueSize > 30) { needKey = true; askKeyFrame(); return; }
   decoder.decode(new EncodedVideoChunk({ type: type === 2 ? 'key' : 'delta', timestamp: ts, data: payload }));
   if (type === 2) needKey = false;
 }
