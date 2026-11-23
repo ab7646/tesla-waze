@@ -16,6 +16,7 @@ class H264Encoder(
     val width: Int,
     val height: Int,
     private val sink: (encoder: H264Encoder, type: Int, ptsUs: Long, data: ByteArray) -> Unit,
+    private val bitRate: Int = 4_000_000,
 ) {
     companion object {
         const val CONFIG = 1
@@ -35,7 +36,7 @@ class H264Encoder(
     fun start() {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             setInteger(MediaFormat.KEY_FRAME_RATE, 30)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
             // Keep frames flowing when the screen is static, so the car view never freezes.
@@ -63,6 +64,14 @@ class H264Encoder(
             codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
         } catch (e: Exception) {
             Log.w(TAG, "key frame request failed", e)
+        }
+    }
+
+    fun setBitrate(bps: Int) {
+        try {
+            codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps) })
+        } catch (e: Exception) {
+            Log.w(TAG, "bitrate change failed", e)
         }
     }
 

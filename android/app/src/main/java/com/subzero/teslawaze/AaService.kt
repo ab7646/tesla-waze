@@ -11,6 +11,7 @@ import android.graphics.drawable.Icon
 import android.os.IBinder
 import com.subzero.teslawaze.aa.HeadUnit
 import com.subzero.teslawaze.aa.HuCert
+import com.subzero.teslawaze.aa.Transcoder
 import org.json.JSONObject
 import java.net.ConnectException
 import java.nio.ByteBuffer
@@ -24,7 +25,10 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     companion object {
         const val ACTION_STOP = "com.subzero.teslawaze.AA_STOP"
         private const val CHANNEL = "android_auto"
-        private const val MAX_QUEUE_BYTES = 768L * 1024
+        private const val MAX_QUEUE_BYTES = 512L * 1024
+        private const val START_BITRATE = 1_500_000
+        private const val MIN_BITRATE = 500_000
+        private const val MAX_BITRATE = 3_000_000
         @Volatile var running = false
             private set
     }
@@ -36,6 +40,9 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     @Volatile private var codecConfig: ByteArray? = null
     @Volatile private var needKey = true
     @Volatile private var sentFrames = 0
+    @Volatile private var transcoder: Transcoder? = null
+    @Volatile private var bitRate = START_BITRATE
+    private var bitrateThread: Thread? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -76,7 +83,6 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             try {
                 hu = HeadUnit(HuCert.keyManagers(this), this, full)
                 headUnit = hu
-                codecConfig = null
                 needKey = true
                 hu.run()
                 AppLog.add("החיבור ל-Android Auto הסתיים")
@@ -100,32 +106,73 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     }
 
     // ---- HeadUnit.Listener (Android Auto worker thread) ----
+    // Android Auto's own stream runs at 4-5 Mbps; it is decoded and re-encoded here at a bitrate
+    // that follows what the mobile link actually carries.
+
+    private fun transcoder(): Transcoder = synchronized(this) {
+        transcoder ?: Transcoder(HeadUnit.VIDEO_W, HeadUnit.VIDEO_H, bitRate, ::onEncoded).also {
+            transcoder = it
+            bitrateThread = Thread({ adaptBitrate() }, "aa-bitrate").also { t -> t.start() }
+        }
+    }
 
     override fun onVideoConfig(data: ByteArray) {
-        codecConfig = data
-        needKey = true
         AppLog.status = if (screenPresent) "משדר לטסלה" else "Android Auto מחובר, ממתין לטסלה"
-        if (screenPresent) sendFrame(1, 0, data)
+        transcoder().config(data)
     }
 
     override fun onVideoFrame(ptsUs: Long, data: ByteArray) {
-        if (!screenPresent) return
-        val r = relay ?: return
-        val key = containsIdr(data)
-        if (key) {
-            needKey = false
-            val config = codecConfig
-            sendFrame(2, ptsUs, if (config != null && !startsWithSps(data)) config + data else data)
-            return
+        transcoder().frame(data)
+    }
+
+    /** Output of our own encoder (its drain thread). Key frames already carry SPS/PPS. */
+    private fun onEncoded(@Suppress("UNUSED_PARAMETER") enc: H264Encoder, type: Int, ptsUs: Long, data: ByteArray) {
+        when (type) {
+            H264Encoder.CONFIG -> {
+                codecConfig = data
+                if (screenPresent) sendFrame(1, 0, data)
+            }
+            H264Encoder.KEY -> {
+                if (!screenPresent) return
+                needKey = false
+                sendFrame(2, ptsUs, data)
+            }
+            else -> {
+                if (!screenPresent || needKey) return
+                val r = relay ?: return
+                if (r.queued() > MAX_QUEUE_BYTES) {
+                    needKey = true
+                    AppLog.add("החיבור לרכב איטי, מדלג על תמונות")
+                    transcoder?.requestKeyFrame()
+                    return
+                }
+                sendFrame(3, ptsUs, data)
+            }
         }
-        if (needKey) return
-        if (r.queued() > MAX_QUEUE_BYTES) {
-            needKey = true
-            AppLog.add("החיבור לרכב איטי, מדלג על תמונות")
-            headUnit?.requestKeyFrame()
-            return
+    }
+
+    /** Lowers the bitrate quickly when data piles up on the phone, raises it slowly when the link is clear. */
+    private fun adaptBitrate() {
+        var calm = 0
+        while (running) {
+            try { Thread.sleep(1000) } catch (_: InterruptedException) { return }
+            if (!screenPresent) continue
+            val q = relay?.queued() ?: continue
+            var next = bitRate
+            if (q > 150_000) {
+                next = maxOf(MIN_BITRATE, (bitRate * 0.7).toInt())
+                calm = 0
+            } else if (q < 20_000 && ++calm >= 5) {
+                next = minOf(MAX_BITRATE, (bitRate * 1.15).toInt())
+                calm = 0
+            }
+            if (next != bitRate) {
+                if (next < bitRate) AppLog.add("מוריד איכות ל-${next / 1000} kbps")
+                bitRate = next
+                transcoder?.setBitrate(next)
+            }
+            AppLog.status = "משדר לטסלה · ${bitRate / 1000} kbps"
         }
-        sendFrame(3, ptsUs, data)
     }
 
     private fun sendFrame(type: Int, ptsUs: Long, data: ByteArray) {
@@ -139,28 +186,6 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         if (relay?.send(packet) == true) sentFrames++
     }
 
-    private fun nalTypes(data: ByteArray): Sequence<Int> = sequence {
-        var i = 0
-        while (i + 3 < data.size) {
-            if (data[i].toInt() == 0 && data[i + 1].toInt() == 0) {
-                val start = when {
-                    data[i + 2].toInt() == 1 -> i + 3
-                    data[i + 2].toInt() == 0 && data[i + 3].toInt() == 1 -> i + 4
-                    else -> -1
-                }
-                if (start in 0 until data.size) {
-                    yield(data[start].toInt() and 0x1F)
-                    i = start
-                    continue
-                }
-            }
-            i++
-        }
-    }
-
-    private fun containsIdr(data: ByteArray) = nalTypes(data).any { it == 5 }
-    private fun startsWithSps(data: ByteArray) = nalTypes(data).firstOrNull() == 7
-
     // ---- RelayClient.Listener (OkHttp threads) ----
 
     override fun onPeer(present: Boolean) {
@@ -170,7 +195,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         AppLog.status = if (present) "הטסלה מחוברת" else "ממתין לטסלה"
         if (present) {
             codecConfig?.let { sendFrame(1, 0, it) }
-            headUnit?.requestKeyFrame()
+            transcoder?.requestKeyFrame()
         }
     }
 
@@ -178,7 +203,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         when (message.optString("type")) {
             "keyframe" -> {
                 AppLog.add("המסך ביקש תמונה מלאה")
-                headUnit?.requestKeyFrame()
+                transcoder?.requestKeyFrame()
             }
             "touch" -> {
                 val hu = headUnit ?: return
@@ -223,6 +248,9 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         running = false
         headUnit?.close()
         worker?.interrupt()
+        bitrateThread?.interrupt()
+        transcoder?.release()
+        transcoder = null
         relay?.close()
         relay = null
         screenPresent = false
