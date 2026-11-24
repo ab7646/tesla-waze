@@ -32,6 +32,27 @@ object HuCert {
     fun import(context: Context, uri: Uri): String {
         val text = context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
             ?: error("לא ניתן לקרוא את הקובץ")
+        return importText(context, text)
+    }
+
+    /**
+     * Downloads the PEM from a link the user gives (kept only on this phone, never in the app or
+     * the repository, which are public). Google Drive "view" links are turned into direct downloads.
+     * Blocking; call off the main thread.
+     */
+    fun download(context: Context, link: String): String {
+        val driveId = Regex("""drive\.google\.com/(?:file/d/|open\?id=|uc\?(?:.*&)?id=)([\w-]+)""").find(link)?.groupValues?.get(1)
+        val url = if (driveId != null) "https://drive.google.com/uc?export=download&id=$driveId" else link
+        val client = okhttp3.OkHttpClient()
+        client.newCall(okhttp3.Request.Builder().url(url).build()).execute().use { response ->
+            if (!response.isSuccessful) error("ההורדה נכשלה (HTTP ${response.code})")
+            val text = response.body?.string().orEmpty()
+            if (!text.contains("-----BEGIN")) error("הקישור לא החזיר קובץ PEM. ודא שהשיתוף ב-Drive הוא \"כל מי שיש לו את הקישור\"")
+            return importText(context, text)
+        }
+    }
+
+    private fun importText(context: Context, text: String): String {
         val (chain, _) = parse(text)
         file(context).writeText(text)
         return chain.first().subjectX500Principal.name

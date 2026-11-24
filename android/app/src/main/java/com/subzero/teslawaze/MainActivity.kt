@@ -187,7 +187,7 @@ class MainActivity : Activity() {
             certInfo,
             row(
                 button("⚙️  Android Auto", PURPLE, filled = false) { openAndroidAutoSettings() } to 1f,
-                button("📄  תעודה", ORANGE, filled = false) { pickCertificate() } to 1f,
+                button("📄  תעודה", ORANGE, filled = false) { askCertificate() } to 1f,
             ),
             row(
                 toggle to 1f,
@@ -274,6 +274,50 @@ class MainActivity : Activity() {
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
             }
+            .setNegativeButton("ביטול", null)
+            .show()
+    }
+
+    /**
+     * Downloads the head unit certificate from the user's own link (e.g. a Google Drive share).
+     * The link is kept only on this phone: the app and its repository are public, so it must not
+     * be built in.
+     */
+    private fun askCertificate() {
+        val prefs = getSharedPreferences("tesla_waze", MODE_PRIVATE)
+        val clip = try {
+            getSystemService(android.content.ClipboardManager::class.java).primaryClip
+                ?.getItemAt(0)?.text?.toString()?.trim()?.takeIf { it.startsWith("http") }
+        } catch (_: Exception) { null }
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            hint = "https://drive.google.com/file/d/…"
+            setText(prefs.getString("cert_link", null) ?: clip ?: "")
+            textDirection = View.TEXT_DIRECTION_LTR
+        }
+        AlertDialog.Builder(this)
+            .setTitle("תעודת יחידת ראש")
+            .setMessage("הדבק את הקישור לקובץ (למשל שיתוף מ-Google Drive). הקישור נשמר רק בטלפון הזה.")
+            .setView(input)
+            .setPositiveButton("הורד") { _, _ ->
+                val link = input.text.toString().trim()
+                if (!link.startsWith("https://")) {
+                    Toast.makeText(this, "צריך קישור שמתחיל ב-https://", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                prefs.edit().putString("cert_link", link).apply()
+                Toast.makeText(this, "מוריד את התעודה…", Toast.LENGTH_SHORT).show()
+                Thread {
+                    val message = try {
+                        "התעודה נטענה: ${HuCert.download(this, link)}"
+                    } catch (e: Exception) {
+                        "הורדת התעודה נכשלה: ${e.message}"
+                    }
+                    AppLog.add(message)
+                    ui.post { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
+                }.start()
+            }
+            .setNeutralButton("בחר קובץ") { _, _ -> pickCertificate() }
             .setNegativeButton("ביטול", null)
             .show()
     }
