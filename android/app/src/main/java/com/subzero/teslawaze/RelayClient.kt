@@ -67,8 +67,12 @@ class RelayClient(private val url: String, private val listener: Listener) : Web
         ws = null
         listener.onPeer(false)
         if (closed) return
-        val delay = minOf(30L, 1L shl minOf(attempt++, 5))
-        listener.onState("$why. מנסה שוב בעוד $delay שניות…")
-        scheduler.schedule({ connect() }, delay, TimeUnit.SECONDS)
+        // The first two retries are near-instant (half a second), so a short mobile blip recovers
+        // almost immediately; after that back off exponentially up to 30 seconds.
+        val delayMs = if (attempt < 2) 500L else minOf(30_000L, 1_000L shl minOf(attempt - 2, 5))
+        attempt++
+        val msg = if (delayMs < 1000) "$why — מתחבר מחדש…" else "$why. מנסה שוב בעוד ${delayMs / 1000} שניות…"
+        listener.onState(msg)
+        scheduler.schedule({ connect() }, delayMs, TimeUnit.MILLISECONDS)
     }
 }

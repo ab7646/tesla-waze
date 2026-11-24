@@ -16,6 +16,7 @@
   button.secondary { background:#1b2027; }
   #code { font:600 96px/1 Consolas, monospace; letter-spacing:12px; direction:ltr; color:#fff; }
   #audioHint { position:fixed; top:10px; left:10px; font-size:16px; background:rgba(0,0,0,.65); padding:6px 12px; border-radius:8px; pointer-events:none; }
+  #reconnBadge { position:fixed; top:10px; left:50%; transform:translateX(-50%); font-size:16px; background:rgba(0,0,0,.6); color:#e8ecf1; padding:6px 14px; border-radius:20px; pointer-events:none; }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -33,6 +34,7 @@
 </div>
 <div id="stats"></div>
 <div id="audioHint" hidden>🔇 גע במסך כדי להפעיל שמע</div>
+<div id="reconnBadge" hidden>מתחבר מחדש…</div>
 
 <script src="config.js"></script>
 <script>
@@ -63,11 +65,33 @@ const overlay = document.getElementById('overlay');
 const statusEl = document.getElementById('status');
 const hintEl = document.getElementById('hint');
 const statsEl = document.getElementById('stats');
+const reconnBadge = document.getElementById('reconnBadge');
 
 function showStatus(text, hint) {
   statusEl.textContent = text;
   hintEl.textContent = hint || '';
   overlay.hidden = false;
+}
+
+// A brief mobile blip shouldn't black out the car. If we already showed video, keep the last
+// frame frozen with a small badge and only fall back to the full overlay if it lasts a few seconds.
+function softDrop(badgeText, fullText, fullHint) {
+  if (everPlayed) {
+    reconnBadge.textContent = badgeText;
+    reconnBadge.hidden = false;
+    overlay.hidden = true;
+    if (!reconnTimer) reconnTimer = setTimeout(() => {
+      reconnTimer = 0; reconnBadge.hidden = true; showStatus(fullText, fullHint);
+    }, 4000);
+  } else {
+    showStatus(fullText, fullHint);
+  }
+}
+function videoRecovered() {
+  if (!overlay.hidden) overlay.hidden = true;
+  if (!reconnBadge.hidden) reconnBadge.hidden = true;
+  if (reconnTimer) { clearTimeout(reconnTimer); reconnTimer = 0; }
+  everPlayed = true;
 }
 
 const reloadBtn = document.getElementById('reloadBtn');
@@ -94,6 +118,7 @@ const codecFromSps = (sps) => 'avc1.' + Array.from(sps, (b) => b.toString(16).pa
 // ---------- decoding ----------
 let decoder = null, curCodec = '', curW = 0, curH = 0, needKey = true;
 let lastKeyAsk = 0, lastFrameAt = 0, lastDataAt = 0;
+let reconnTimer = 0, everPlayed = false;
 let stat = { frames: 0, bytes: 0, latencyMs: null };
 
 function askKeyFrame() {
@@ -114,7 +139,7 @@ function setupDecoder(codec, w, h) {
       frame.close();
       stat.frames++;
       lastFrameAt = performance.now();
-      if (!overlay.hidden) overlay.hidden = true;
+      videoRecovered();
     },
     error: (e) => {
       showStatus('שגיאה בפענוח הווידאו', e.message);
@@ -255,15 +280,28 @@ function connect() {
   const sock = new WebSocket(relay + '/room/' + encodeURIComponent(room) + '?role=screen');
   ws = sock;
   sock.binaryType = 'arraybuffer';
-  sock.onopen = () => { if (sock !== ws) return; attempt = 0; showStatus('מחובר לשרת. ממתין לטלפון…', 'פתח את האפליקציה בטלפון ולחץ "התחל הקרנה".'); };
+  sock.onopen = () => {
+    if (sock !== ws) return;
+    attempt = 0;
+    // On a reconnect after we've already shown video, keep the frozen frame + badge instead of
+    // covering it; the full overlay only appears for the very first connection.
+    if (everPlayed) { reconnBadge.textContent = 'מתחבר מחדש…'; reconnBadge.hidden = false; }
+    else showStatus('מחובר לשרת. ממתין לטלפון…', 'פתח את האפליקציה בטלפון ולחץ "התחל הקרנה".');
+  };
   sock.onmessage = (e) => {
     if (sock !== ws) return;  // ignore anything from a socket we've already replaced
     if (typeof e.data !== 'string') return onBinary(e.data);
     let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.type === 'peer') {
       phonePresent = !!m.present;
-      if (phonePresent) { lastDataAt = performance.now(); showStatus('הטלפון מחובר. ממתין לווידאו…'); needKey = true; askKeyFrame(); }
-      else showStatus('הטלפון התנתק. ממתין שיחזור…', 'ההקרנה תחזור אוטומטית.');
+      if (phonePresent) {
+        lastDataAt = performance.now();
+        if (everPlayed) { reconnBadge.textContent = 'מתחבר מחדש…'; reconnBadge.hidden = false; }
+        else showStatus('הטלפון מחובר. ממתין לווידאו…');
+        needKey = true; askKeyFrame();
+      } else {
+        softDrop('מתחבר מחדש…', 'הטלפון התנתק. ממתין שיחזור…', 'ההקרנה תחזור אוטומטית.');
+      }
     }
   };
   sock.onclose = (e) => {
@@ -276,8 +314,10 @@ function connect() {
       reloadBtn.hidden = false;
       return;
     }
-    const delay = Math.min(30, 2 ** Math.min(attempt++, 5));
-    showStatus('אין חיבור לשרת. מנסה שוב בעוד ' + delay + ' שניות…');
+    // The first two retries are near-instant so a short blip recovers at once; then back off.
+    const delay = attempt < 2 ? 0.5 : Math.min(30, 2 ** Math.min(attempt - 2, 5));
+    attempt++;
+    softDrop('מתחבר מחדש…', 'אין חיבור לשרת. מנסה שוב בעוד ' + delay + ' שניות…');
     setTimeout(connect, delay * 1000);
   };
 }
