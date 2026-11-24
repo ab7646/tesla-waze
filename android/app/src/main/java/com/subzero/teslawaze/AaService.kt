@@ -47,6 +47,33 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             private set
         @Volatile var localUrl: String? = null
             private set
+
+        /**
+         * The phone's own address on its Wi-Fi hotspot (the Tesla's gateway), as a URL to open in
+         * the car — or null when no hotspot/AP interface is up. Used both to bind-time report and
+         * for the UI to tell whether a hotspot is on.
+         */
+        fun hotspotUrl(): String? {
+            return try {
+                var best: String? = null
+                for (nif in java.net.NetworkInterface.getNetworkInterfaces()) {
+                    if (!nif.isUp || nif.isLoopback) continue
+                    val name = nif.name.lowercase()
+                    for (addr in nif.inetAddresses) {
+                        if (addr is java.net.Inet4Address && addr.isSiteLocalAddress) {
+                            val ip = addr.hostAddress ?: continue
+                            val apLike = name.contains("ap") || name.contains("wlan") ||
+                                name.contains("swlan") || name.contains("softap")
+                            if (apLike) return "http://$ip:$LOCAL_PORT"
+                            if (ip.startsWith("192.168.")) best = ip
+                        }
+                    }
+                }
+                best?.let { "http://$it:$LOCAL_PORT" }
+            } catch (e: Exception) {
+                null
+            }
+        }
     }
 
     private var relay: RelayClient? = null
@@ -318,28 +345,6 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         localPresent = false
         updateScreen()
         AppLog.add("שרת מקומי כבוי")
-    }
-
-    /** The phone's own address on its hotspot (the Tesla's gateway), as a URL to open in the car. */
-    private fun hotspotUrl(): String? {
-        return try {
-            var best: String? = null
-            for (nif in java.net.NetworkInterface.getNetworkInterfaces()) {
-                if (!nif.isUp || nif.isLoopback) continue
-                val name = nif.name.lowercase()
-                for (addr in nif.inetAddresses) {
-                    if (addr is java.net.Inet4Address && addr.isSiteLocalAddress) {
-                        val ip = addr.hostAddress ?: continue
-                        val apLike = name.contains("ap") || name.contains("wlan") || name.contains("swlan") || name.contains("softap")
-                        if (apLike) return "http://$ip:$LOCAL_PORT"
-                        if (ip.startsWith("192.168.")) best = ip
-                    }
-                }
-            }
-            best?.let { "http://$it:$LOCAL_PORT" }
-        } catch (e: Exception) {
-            null
-        }
     }
 
     private fun sendPcmLocal(channel: Int, rate: Int, channels: Int, pcm: ByteArray, offset: Int) {

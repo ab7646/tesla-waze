@@ -44,13 +44,13 @@ class MainActivity : Activity() {
             (statusDot.background as GradientDrawable).setColor(if (AaService.running) GREEN else 0x66FFFFFF)
             if (log.visibility == View.VISIBLE) log.text = AppLog.text()
             certInfo.text = HuCert.describe(this@MainActivity)?.let { "✓ תעודה טעונה: $it" } ?: "לא נטענה תעודת יחידת ראש"
+            val hotspot = AaService.hotspotUrl()
             if (AaService.localActive) {
                 localBtn.text = "⏹  כבה חיבור מקומי"
-                localInfo.text = AaService.localUrl?.let { "פתח בדפדפן הטסלה:  $it" }
-                    ?: "הפעל נקודה חמה בטלפון כדי לקבל כתובת"
+                localInfo.text = hotspot?.let { "פתח בדפדפן הטסלה:  $it" } ?: "נקודה חמה כבויה — הפעל אותה בטלפון"
             } else {
                 localBtn.text = "📶  הפעל חיבור מקומי (הוט ספוט)"
-                localInfo.text = ""
+                localInfo.text = if (hotspot != null) "✓ נקודה חמה פעילה" else ""
             }
             ui.postDelayed(this, 500)
         }
@@ -322,13 +322,42 @@ class MainActivity : Activity() {
             startService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_OFF))
             return
         }
+        // Android gives no public API to switch the regular hotspot on, so if it's off we send the
+        // user to the hotspot settings (one toggle) rather than failing silently. Their own hotspot
+        // is better than an app one anyway — the Tesla already remembers its name and password.
+        if (AaService.hotspotUrl() == null) {
+            AlertDialog.Builder(this)
+                .setTitle("נקודה חמה כבויה")
+                .setMessage(
+                    "כדי לחבר את הטסלה ישירות צריך נקודה חמה (Hotspot) פעילה בטלפון. אפתח את ההגדרות; " +
+                        "אחרי שתפעיל, חזור ולחץ שוב על \"הפעל חיבור מקומי\".",
+                )
+                .setPositiveButton("פתח הגדרות נקודה חמה") { _, _ -> openHotspotSettings() }
+                .setNegativeButton("ביטול", null)
+                .show()
+            return
+        }
         autoStarted = true // starting here shouldn't be doubled by the auto-start on the next resume
         startForegroundService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_ON))
         ui.postDelayed({ if (AaService.serverMissing) openAndroidAutoSettings() else showLocalInfo() }, 1500)
     }
 
+    private fun openHotspotSettings() {
+        // The hotspot screen's intent/activity varies by OEM, so try the common ones in turn.
+        val candidates = listOf(
+            Intent(Intent.ACTION_MAIN).setClassName("com.android.settings", "com.android.settings.TetherSettings"),
+            Intent("android.settings.TETHER_SETTINGS"),
+            Intent("com.android.settings.WIFI_TETHER_SETTINGS"),
+            Intent(Settings.ACTION_WIRELESS_SETTINGS),
+        )
+        for (intent in candidates) {
+            try { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return } catch (_: Exception) {}
+        }
+        Toast.makeText(this, "פתח ידנית: הגדרות ← נקודה חמה / שיתוף אינטרנט", Toast.LENGTH_LONG).show()
+    }
+
     private fun showLocalInfo() {
-        val url = AaService.localUrl
+        val url = AaService.hotspotUrl() ?: AaService.localUrl
         val msg = if (url != null) {
             "1) ודא שנקודה חמה (Hotspot) פעילה בטלפון.\n" +
                 "2) בטסלה התחבר ל-WiFi של הטלפון.\n" +
