@@ -302,7 +302,7 @@ class HeadUnit(
     @Volatile private var mic: AudioRecord? = null
 
     @SuppressLint("MissingPermission") // guarded by the STATE_INITIALIZED check and a try/catch
-    private fun startMic() = synchronized(micLock) {
+    private fun startMic(): Unit = synchronized(micLock) {
         if (mic != null) return
         val rate = 16000
         val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -339,7 +339,7 @@ class HeadUnit(
         }, "aa-mic").start()
     }
 
-    private fun stopMic() = synchronized(micLock) {
+    private fun stopMic(): Unit = synchronized(micLock) {
         val rec = mic ?: return
         mic = null // signals the reader thread to stop
         try { rec.stop() } catch (_: Exception) {}
