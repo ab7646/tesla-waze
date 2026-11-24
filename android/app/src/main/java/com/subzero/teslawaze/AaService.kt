@@ -28,6 +28,9 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
 
     companion object {
         const val ACTION_STOP = "com.subzero.teslawaze.AA_STOP"
+        const val ACTION_LOCAL_ON = "com.subzero.teslawaze.LOCAL_ON"
+        const val ACTION_LOCAL_OFF = "com.subzero.teslawaze.LOCAL_OFF"
+        const val LOCAL_PORT = 8080
         private const val CHANNEL = "android_auto"
         private const val MAX_QUEUE_BYTES = 512L * 1024
         private const val RECOVER_QUEUE_BYTES = 64L * 1024
@@ -38,6 +41,11 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             private set
         /** True after a connection attempt found Android Auto's head unit server not listening. */
         @Volatile var serverMissing = false
+            private set
+        /** Local hotspot server state, read by the UI. */
+        @Volatile var localActive = false
+            private set
+        @Volatile var localUrl: String? = null
             private set
     }
 
@@ -52,15 +60,22 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     @Volatile private var transcoder: Transcoder? = null
     @Volatile private var bitRate = START_BITRATE
     private var bitrateThread: Thread? = null
+    @Volatile private var localServer: LocalServer? = null
+    @Volatile private var relayPresent = false
+    @Volatile private var localPresent = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
+        when (intent?.action) {
+            ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
+            ACTION_LOCAL_OFF -> { stopLocal(); return START_NOT_STICKY }
+        }
+        val wantLocal = intent?.action == ACTION_LOCAL_ON
+        if (running) {
+            if (wantLocal) startLocal()
             return START_NOT_STICKY
         }
-        if (running) return START_NOT_STICKY
         // Claim the microphone foreground-service type only when the user granted RECORD_AUDIO,
         // otherwise startForeground throws and the whole service dies. Without it, voice is just off.
         var fgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
@@ -76,6 +91,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         relay = RelayClient(url, this).also { it.connect() }
         worker = Thread({ loop() }, "android-auto").also { it.start() }
         AppLog.status = "מצב אנדרואיד אוטו פעיל"
+        if (wantLocal) startLocal()
         return START_NOT_STICKY
     }
 
@@ -193,21 +209,33 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     @Volatile private var audioFailed = false
 
     override fun onAudio(channel: Int, rate: Int, channels: Int, pcm: ByteArray, offset: Int): Boolean {
-        if (!screenPresent || audioFailed) return false
-        val r = relay ?: return false
-        val enc = synchronized(audioEncoders) {
-            audioEncoders[channel] ?: try {
-                AudioEncoder(rate, channels, if (channels == 2) 64_000 else 24_000) { pts, data ->
-                    sendAudio(channel, rate, channels, pts, data)
-                }.also { audioEncoders[channel] = it }
-            } catch (e: Exception) {
-                audioFailed = true
-                AppLog.add("אין מקודד שמע (${e.javaClass.simpleName}), השמע יישאר בטלפון")
-                null
+        var taken = false
+        // Local hotspot: send raw PCM — Wi-Fi has the bandwidth, and the car plays it with the Web
+        // Audio API, so no Opus and no WebCodecs are needed over plain http.
+        if (localPresent) {
+            sendPcmLocal(channel, rate, channels, pcm, offset)
+            taken = true
+        }
+        // Relay (internet): Opus-encode to fit the mobile uplink.
+        val r = relay
+        if (relayPresent && r != null && !audioFailed) {
+            val enc = synchronized(audioEncoders) {
+                audioEncoders[channel] ?: try {
+                    AudioEncoder(rate, channels, if (channels == 2) 64_000 else 24_000) { pts, data ->
+                        sendAudio(channel, rate, channels, pts, data)
+                    }.also { audioEncoders[channel] = it }
+                } catch (e: Exception) {
+                    audioFailed = true
+                    AppLog.add("אין מקודד שמע (${e.javaClass.simpleName}), השמע יישאר בטלפון")
+                    null
+                }
             }
-        } ?: return false
-        if (r.queued() <= MAX_QUEUE_BYTES) enc.feed(pcm, offset) // a clogged link drops audio, not video
-        return true
+            if (enc != null) {
+                if (r.queued() <= MAX_QUEUE_BYTES) enc.feed(pcm, offset) // a clogged link drops audio, not video
+                taken = true
+            }
+        }
+        return taken
     }
 
     /**
@@ -238,6 +266,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         while (running) {
             try { Thread.sleep(1000) } catch (_: InterruptedException) { return }
             headUnit?.refreshNight() // follow day/night even while parked / between screens
+            if (localActive && localUrl == null) localUrl = hotspotUrl() // hotspot may come up late
             if (!screenPresent) continue
             val q = relay?.queued() ?: continue
             var next = bitRate
@@ -262,17 +291,96 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             .put(data)
             .array()
         if (relay?.send(packet) == true) sentFrames++
+        localServer?.broadcast(packet)
+    }
+
+    // ---- local hotspot server (direct Tesla <-> phone over Wi-Fi, no internet) ----
+
+    private fun startLocal() {
+        if (localServer != null) { if (localUrl == null) localUrl = hotspotUrl(); return }
+        try {
+            val srv = LocalServer(applicationContext, LOCAL_PORT, ::onLocalScreens, ::onControl)
+            srv.start(0, false) // 0 = no socket read timeout, so a quiet WebSocket stays open
+            localServer = srv
+            localActive = true
+            localUrl = hotspotUrl()
+            AppLog.add("שרת מקומי פעיל" + (localUrl?.let { " · $it" } ?: " (הפעל נקודה חמה כדי לקבל כתובת)"))
+        } catch (e: Exception) {
+            AppLog.add("הפעלת שרת מקומי נכשלה: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    private fun stopLocal() {
+        localServer?.let { try { it.stop() } catch (_: Exception) {} }
+        localServer = null
+        localActive = false
+        localUrl = null
+        localPresent = false
+        updateScreen()
+        AppLog.add("שרת מקומי כבוי")
+    }
+
+    /** The phone's own address on its hotspot (the Tesla's gateway), as a URL to open in the car. */
+    private fun hotspotUrl(): String? {
+        return try {
+            var best: String? = null
+            for (nif in java.net.NetworkInterface.getNetworkInterfaces()) {
+                if (!nif.isUp || nif.isLoopback) continue
+                val name = nif.name.lowercase()
+                for (addr in nif.inetAddresses) {
+                    if (addr is java.net.Inet4Address && addr.isSiteLocalAddress) {
+                        val ip = addr.hostAddress ?: continue
+                        val apLike = name.contains("ap") || name.contains("wlan") || name.contains("swlan") || name.contains("softap")
+                        if (apLike) return "http://$ip:$LOCAL_PORT"
+                        if (ip.startsWith("192.168.")) best = ip
+                    }
+                }
+            }
+            best?.let { "http://$it:$LOCAL_PORT" }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun sendPcmLocal(channel: Int, rate: Int, channels: Int, pcm: ByteArray, offset: Int) {
+        val len = pcm.size - offset
+        if (len <= 0) return
+        val packet = ByteBuffer.allocate(13 + len)
+            .put(4.toByte())
+            .putLong(System.nanoTime() / 1000)
+            .putShort(rate.toShort())
+            .put(channels.toByte())
+            .put(channel.toByte())
+            .put(pcm, offset, len)
+            .array()
+        localServer?.broadcast(packet)
     }
 
     // ---- RelayClient.Listener (OkHttp threads) ----
 
     override fun onPeer(present: Boolean) {
-        screenPresent = present
-        needKey = true
-        congested = false
-        AppLog.add(if (present) "הטסלה התחברה" else "הטסלה התנתקה")
-        AppLog.status = if (present) "הטסלה מחוברת" else "ממתין לטסלה"
-        if (present) {
+        if (present != relayPresent) AppLog.add(if (present) "הטסלה התחברה (אינטרנט)" else "הטסלה התנתקה (אינטרנט)")
+        relayPresent = present
+        updateScreen()
+    }
+
+    /** A Tesla screen connected or left over the local hotspot server (its own thread). */
+    private fun onLocalScreens(count: Int) {
+        val present = count > 0
+        if (present != localPresent) AppLog.add(if (present) "הטסלה התחברה (מקומי)" else "הטסלה התנתקה (מקומי)")
+        localPresent = present
+        updateScreen()
+    }
+
+    /** Folds the relay and local screens into one "is anyone watching" state. */
+    private fun updateScreen() {
+        val now = relayPresent || localPresent
+        val was = screenPresent
+        screenPresent = now
+        AppLog.status = if (now) "הטסלה מחוברת" else "ממתין לטסלה"
+        if (now && !was) {
+            needKey = true
+            congested = false
             codecConfig?.let { sendFrame(1, 0, it) }
             transcoder?.requestKeyFrame()
         }
@@ -342,6 +450,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         }
         relay?.close()
         relay = null
+        stopLocal()
         screenPresent = false
         AppLog.status = "מצב אנדרואיד אוטו הופסק"
         stopForeground(STOP_FOREGROUND_REMOVE)

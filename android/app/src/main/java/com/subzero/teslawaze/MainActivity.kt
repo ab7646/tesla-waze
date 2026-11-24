@@ -34,6 +34,8 @@ class MainActivity : Activity() {
     private lateinit var statusDot: View
     private lateinit var certInfo: TextView
     private lateinit var log: TextView
+    private lateinit var localInfo: TextView
+    private lateinit var localBtn: Button
     private val ui = Handler(Looper.getMainLooper())
     private var autoStarted = false
     private val tick = object : Runnable {
@@ -42,6 +44,14 @@ class MainActivity : Activity() {
             (statusDot.background as GradientDrawable).setColor(if (AaService.running) GREEN else 0x66FFFFFF)
             if (log.visibility == View.VISIBLE) log.text = AppLog.text()
             certInfo.text = HuCert.describe(this@MainActivity)?.let { "✓ תעודה טעונה: $it" } ?: "לא נטענה תעודת יחידת ראש"
+            if (AaService.localActive) {
+                localBtn.text = "⏹  כבה חיבור מקומי"
+                localInfo.text = AaService.localUrl?.let { "פתח בדפדפן הטסלה:  $it" }
+                    ?: "הפעל נקודה חמה בטלפון כדי לקבל כתובת"
+            } else {
+                localBtn.text = "📶  הפעל חיבור מקומי (הוט ספוט)"
+                localInfo.text = ""
+            }
             ui.postDelayed(this, 500)
         }
     }
@@ -167,6 +177,19 @@ class MainActivity : Activity() {
             ),
         ))
 
+        // ---- local hotspot mode: direct phone <-> Tesla, no internet ----
+        localInfo = label("", 13f, TEAL, bold = true).apply {
+            setTextIsSelectable(true)
+            textDirection = View.TEXT_DIRECTION_LTR
+        }
+        localBtn = button("📶  הפעל חיבור מקומי (הוט ספוט)", TEAL) { toggleLocal() }
+        root.addView(card(
+            label("חיבור מקומי (ללא אינטרנט)", 18f, bold = true),
+            label("לקטעים בלי קליטה: הפעל נקודה חמה בטלפון, חבר את הטסלה ל-WiFi של הטלפון, הפעל כאן, ופתח בדפדפן הטסלה את הכתובת שתופיע.", 13f, MUTED),
+            localInfo,
+            localBtn,
+        ))
+
         // ---- tools: settings, certificate and log in a 2x2 grid ----
         certInfo = label("", 12f, MUTED)
         log = label("", 11f, 0xFFCFE3FF.toInt()).apply {
@@ -288,6 +311,42 @@ class MainActivity : Activity() {
                 openAndroidAutoSettings()
             }
         }, 1500)
+    }
+
+    /**
+     * Local hotspot mode: the phone serves the stream directly over Wi-Fi, so it keeps working with
+     * no cellular. Starts (or stops) Android Auto mode together with the on-device server.
+     */
+    private fun toggleLocal() {
+        if (AaService.localActive) {
+            startService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_OFF))
+            return
+        }
+        autoStarted = true // starting here shouldn't be doubled by the auto-start on the next resume
+        startForegroundService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_ON))
+        ui.postDelayed({ if (AaService.serverMissing) openAndroidAutoSettings() else showLocalInfo() }, 1500)
+    }
+
+    private fun showLocalInfo() {
+        val url = AaService.localUrl
+        val msg = if (url != null) {
+            "1) ודא שנקודה חמה (Hotspot) פעילה בטלפון.\n" +
+                "2) בטסלה התחבר ל-WiFi של הטלפון.\n" +
+                "3) פתח בדפדפן הטסלה את הכתובת:\n\n$url"
+        } else {
+            "הפעל קודם נקודה חמה (Hotspot) בטלפון. הכתובת לפתיחה בטסלה תופיע כאן ובכרטיס \"חיבור מקומי\"."
+        }
+        AlertDialog.Builder(this)
+            .setTitle("חיבור מקומי")
+            .setMessage(msg)
+            .setPositiveButton("סגור", null)
+            .apply {
+                if (url != null) setNeutralButton("שתף כתובת") { _, _ ->
+                    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, url)
+                    startActivity(Intent.createChooser(send, null))
+                }
+            }
+            .show()
     }
 
     private fun askPairingCode() {
@@ -422,5 +481,6 @@ class MainActivity : Activity() {
         private const val PURPLE = 0xFF8B5CF6.toInt()
         private const val ORANGE = 0xFFF59E0B.toInt()
         private const val SLATE = 0xFF475569.toInt()
+        private const val TEAL = 0xFF0EA5A5.toInt()
     }
 }

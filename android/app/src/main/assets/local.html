@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Waze לטסלה (מקומי)</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; color:#e8ecf1; font:20px/1.5 system-ui, "Segoe UI", Arial, sans-serif; overflow:hidden; }
+  #player { position:fixed; inset:0; width:100vw; height:100vh; object-fit:contain; background:#000; touch-action:none; }
+  #overlay { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:24px; background:#0d1117; }
+  #overlay[hidden] { display:none; }
+  #status { font-size:26px; max-width:900px; }
+  #hint { color:#9aa4b2; font-size:18px; max-width:900px; }
+  #stats { position:fixed; bottom:6px; left:10px; font:13px/1.2 Consolas, monospace; color:#9aa4b2; background:rgba(0,0,0,.45); padding:3px 7px; border-radius:6px; direction:ltr; pointer-events:none; }
+  #audioHint { position:fixed; top:10px; left:10px; font-size:16px; background:rgba(0,0,0,.65); padding:6px 12px; border-radius:8px; pointer-events:none; }
+  #micBtn { position:fixed; bottom:18px; right:18px; width:72px; height:72px; border-radius:50%; border:none; font-size:34px; background:#24406b; color:#fff; box-shadow:0 3px 14px rgba(0,0,0,.55); z-index:5; touch-action:manipulation; }
+  #micBtn:active { background:#1b2d4d; transform:scale(.94); }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<video id="player" autoplay muted playsinline></video>
+<div id="overlay"><div id="status">מתחבר…</div><div id="hint"></div></div>
+<div id="stats"></div>
+<div id="audioHint" hidden>🔇 גע במסך כדי להפעיל שמע</div>
+<button id="micBtn" title="דבר לוויז / לעוזר" hidden>🎤</button>
+
+<script src="jmuxer.min.js"></script>
+<script>
+'use strict';
+// Local hotspot mode: the phone serves this page and a WebSocket on the same origin. Video is raw
+// H.264 (Annex-B) fed into <video> through MSE (jMuxer) — which, unlike WebCodecs, works over plain
+// http — and audio is raw 16-bit PCM played with the Web Audio API.
+// Wire format (phone -> screen): byte 0 type; 1 = video config, 2 = key, 3 = delta, 4 = audio.
+//   video: [type][pts:8][w:2][h:2][H.264]   audio: [4][pts:8][rate:2][chans:1][streamId:1][PCM LE]
+
+const video = document.getElementById('player');
+const overlay = document.getElementById('overlay');
+const statusEl = document.getElementById('status');
+const hintEl = document.getElementById('hint');
+const statsEl = document.getElementById('stats');
+const audioHint = document.getElementById('audioHint');
+const micBtn = document.getElementById('micBtn');
+
+function showStatus(text, hint) { statusEl.textContent = text; hintEl.textContent = hint || ''; overlay.hidden = false; }
+
+// ---------- video (MSE via jMuxer) ----------
+let jmuxer = null, lastFrameAt = 0, gotVideo = false;
+let stat = { frames: 0, bytes: 0 };
+
+function newMuxer() {
+  if (jmuxer) { try { jmuxer.destroy(); } catch {} }
+  jmuxer = new JMuxer({ node: 'player', mode: 'video', flushingTime: 0, clearBuffer: true, fps: 30, debug: false });
+  gotVideo = false;
+}
+newMuxer();
+
+// Keep the picture close to live: if it drifts behind the newest buffered data, jump forward.
+setInterval(() => {
+  try {
+    const b = video.buffered;
+    if (b.length) {
+      const end = b.end(b.length - 1);
+      if (end - video.currentTime > 0.6) video.currentTime = end - 0.1;
+    }
+    if (video.paused) video.play().catch(() => {});
+  } catch {}
+}, 1000);
+
+// ---------- audio (raw PCM) ----------
+let actx = null;
+const audioStreams = new Map();
+function audioCtx() {
+  if (!actx && window.AudioContext) { try { actx = new AudioContext({ latencyHint: 'interactive' }); } catch {} }
+  return actx;
+}
+for (const ev of ['pointerdown', 'pointerup', 'touchend', 'click']) {
+  document.addEventListener(ev, () => {
+    const c = audioCtx();
+    if (c && c.state !== 'running') c.resume().then(() => { audioHint.hidden = true; }).catch(() => {});
+  }, { capture: true });
+}
+function onAudio(buf) {
+  const c = audioCtx(); if (!c) return;
+  if (c.state !== 'running') { audioHint.hidden = false; return; }
+  const dv = new DataView(buf);
+  const rate = dv.getUint16(9), chans = dv.getUint8(11) || 1, id = dv.getUint8(12);
+  const frames = Math.floor((buf.byteLength - 13) / 2 / chans);
+  if (frames <= 0) return;
+  const ab = c.createBuffer(chans, frames, rate);
+  for (let ch = 0; ch < chans; ch++) {
+    const out = ab.getChannelData(ch);
+    for (let i = 0; i < frames; i++) out[i] = dv.getInt16(13 + (i * chans + ch) * 2, true) / 32768;
+  }
+  let s = audioStreams.get(id); if (!s) { s = { playhead: 0 }; audioStreams.set(id, s); }
+  const now = c.currentTime;
+  if (s.playhead < now + 0.02 || s.playhead > now + 0.6) s.playhead = now + 0.12;
+  const src = c.createBufferSource();
+  src.buffer = ab; src.connect(c.destination); src.start(s.playhead);
+  s.playhead += ab.duration;
+}
+
+// ---------- incoming frames ----------
+function onBinary(buf) {
+  const type = new DataView(buf).getUint8(0);
+  if (type === 4) return onAudio(buf);
+  const payload = new Uint8Array(buf, 13);
+  stat.bytes += buf.byteLength; stat.frames++;
+  lastFrameAt = performance.now();
+  if (!gotVideo && type === 3) { send({ type: 'keyframe' }); return; } // wait for config/key first
+  jmuxer.feed({ video: payload });
+  if (type === 1 || type === 2) gotVideo = true;
+  if (!overlay.hidden) overlay.hidden = true;
+}
+
+// ---------- touch -> phone ----------
+const touches = new Map();
+let dragQueued = false;
+function toVideo(e) {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return null;
+  const r = video.getBoundingClientRect();
+  const s = Math.min(r.width / vw, r.height / vh);
+  const x = (e.clientX - r.left - (r.width - vw * s) / 2) / s;
+  const y = (e.clientY - r.top - (r.height - vh * s) / 2) / s;
+  return [Math.max(0, Math.min(vw - 1, Math.round(x))), Math.max(0, Math.min(vh - 1, Math.round(y)))];
+}
+function freeTouchId() {
+  const used = new Set([...touches.values()].map((t) => t.id));
+  let id = 0; while (used.has(id)) id++;
+  return id;
+}
+function sendTouch(action, pointerId) {
+  const keys = [...touches.keys()];
+  const p = keys.map((k) => { const t = touches.get(k); return [t.id, t.x, t.y]; });
+  send({ type: 'touch', a: action, i: Math.max(0, keys.indexOf(pointerId)), p });
+}
+video.addEventListener('pointerdown', (e) => {
+  const pos = toVideo(e); if (!pos) return;
+  e.preventDefault();
+  try { video.setPointerCapture(e.pointerId); } catch {}
+  touches.set(e.pointerId, { id: freeTouchId(), x: pos[0], y: pos[1] });
+  sendTouch(touches.size === 1 ? 0 : 5, e.pointerId);
+});
+video.addEventListener('pointermove', (e) => {
+  const t = touches.get(e.pointerId); if (!t) return;
+  const pos = toVideo(e); if (!pos) return;
+  t.x = pos[0]; t.y = pos[1];
+  if (!dragQueued) {
+    dragQueued = true;
+    requestAnimationFrame(() => { dragQueued = false; if (touches.size) sendTouch(2, [...touches.keys()][0]); });
+  }
+});
+function endTouch(e) {
+  const t = touches.get(e.pointerId); if (!t) return;
+  const pos = toVideo(e); if (pos) { t.x = pos[0]; t.y = pos[1]; }
+  sendTouch(touches.size === 1 ? 1 : 6, e.pointerId);
+  touches.delete(e.pointerId);
+}
+video.addEventListener('pointerup', endTouch);
+video.addEventListener('pointercancel', endTouch);
+video.addEventListener('contextmenu', (e) => e.preventDefault());
+
+micBtn.addEventListener('click', (e) => {
+  e.preventDefault();
+  const c = audioCtx();
+  if (c && c.state !== 'running') c.resume().then(() => { audioHint.hidden = true; }).catch(() => {});
+  send({ type: 'voice' });
+});
+
+// ---------- WebSocket to the phone (same origin) ----------
+let ws = null, attempt = 0;
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+function connect() {
+  if (ws) { const old = ws; ws = null; try { old.close(); } catch {} }
+  const sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+  ws = sock; sock.binaryType = 'arraybuffer';
+  sock.onopen = () => { if (sock !== ws) return; attempt = 0; showStatus('מחובר לטלפון. ממתין לווידאו…'); newMuxer(); send({ type: 'keyframe' }); };
+  sock.onmessage = (e) => { if (sock === ws && typeof e.data !== 'string') onBinary(e.data); };
+  sock.onclose = () => {
+    if (sock !== ws) return;
+    ws = null;
+    micBtn.hidden = true;
+    const delay = attempt < 2 ? 0.5 : Math.min(10, 2 ** Math.min(attempt - 2, 4));
+    attempt++;
+    showStatus('החיבור לטלפון נותק. מתחבר מחדש…');
+    setTimeout(connect, delay * 1000);
+  };
+}
+
+setInterval(() => {
+  const kbps = Math.round(stat.bytes * 8 / 1000);
+  statsEl.textContent = ws && ws.readyState === 1 ? (stat.frames + ' fps · ' + kbps + ' kbps') : '';
+  stat.frames = 0; stat.bytes = 0;
+  const live = ws && ws.readyState === 1;
+  micBtn.hidden = !(live && gotVideo);
+  if (live && overlay.hidden && performance.now() - lastFrameAt > 3000) {
+    showStatus('הווידאו נעצר. ממתין…', 'אם המסך בטלפון כבוי או נעול, השידור מושהה.');
+    send({ type: 'keyframe' });
+  }
+}, 1000);
+
+connect();
+</script>
+</body>
+</html>

@@ -55,4 +55,6 @@ android {
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Local hotspot mode: a small on-device HTTP + WebSocket server for the Tesla browser.
+    implementation("org.nanohttpd:nanohttpd-websocket:2.3.1")
 }
