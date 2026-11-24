@@ -17,6 +17,8 @@
   #code { font:600 96px/1 Consolas, monospace; letter-spacing:12px; direction:ltr; color:#fff; }
   #audioHint { position:fixed; top:10px; left:10px; font-size:16px; background:rgba(0,0,0,.65); padding:6px 12px; border-radius:8px; pointer-events:none; }
   #reconnBadge { position:fixed; top:10px; left:50%; transform:translateX(-50%); font-size:16px; background:rgba(0,0,0,.6); color:#e8ecf1; padding:6px 14px; border-radius:20px; pointer-events:none; }
+  #micBtn { position:fixed; bottom:18px; right:18px; width:72px; height:72px; border-radius:50%; border:none; font-size:34px; background:#24406b; color:#fff; box-shadow:0 3px 14px rgba(0,0,0,.55); z-index:5; touch-action:manipulation; }
+  #micBtn:active { background:#1b2d4d; transform:scale(.94); }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -35,6 +37,7 @@
 <div id="stats"></div>
 <div id="audioHint" hidden>🔇 גע במסך כדי להפעיל שמע</div>
 <div id="reconnBadge" hidden>מתחבר מחדש…</div>
+<button id="micBtn" title="דבר לוויז / לעוזר" hidden>🎤</button>
 
 <script src="config.js"></script>
 <script>
@@ -165,6 +168,17 @@ for (const ev of ['pointerdown', 'pointerup', 'touchend', 'click']) {
     if (c && c.state !== 'running') c.resume().then(() => { audioHint.hidden = true; }).catch(() => {});
   }, { capture: true });
 }
+
+// The 🎤 button tells the phone to press Android Auto's voice-assistant button, so you can speak
+// to Waze / the assistant without touching the phone. The tap also unlocks audio for the reply.
+const micBtn = document.getElementById('micBtn');
+micBtn.addEventListener('click', (e) => {
+  e.preventDefault();
+  const c = audioCtx();
+  if (c && c.state !== 'running') c.resume().then(() => { audioHint.hidden = true; }).catch(() => {});
+  send({ type: 'voice' });
+  micBtn.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.18)' }, { transform: 'scale(1)' }], { duration: 300 });
+});
 function onAudio(dv, buf) {
   if (!('AudioDecoder' in window)) return;
   const c = audioCtx(); if (!c) return;
@@ -294,6 +308,7 @@ function connect() {
     let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.type === 'peer') {
       phonePresent = !!m.present;
+      micBtn.hidden = !phonePresent;
       if (phonePresent) {
         lastDataAt = performance.now();
         if (everPlayed) { reconnBadge.textContent = 'מתחבר מחדש…'; reconnBadge.hidden = false; }
@@ -308,6 +323,7 @@ function connect() {
     if (sock !== ws) return;
     ws = null;
     phonePresent = false;
+    micBtn.hidden = true;
     if (e.code === 4000) {
       // Another screen opened this connection; don't fight it with endless reconnects.
       showStatus('המסך נפתח בחלון או במכשיר אחר', 'לחץ "טען מחדש" כדי להעביר את התצוגה לכאן.');

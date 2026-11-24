@@ -2,6 +2,9 @@ package com.subzero.teslawaze.aa
 
 import android.annotation.SuppressLint
 import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import com.subzero.teslawaze.AppLog
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -180,6 +183,7 @@ class HeadUnit(
 
     fun close() {
         running = false
+        stopMic()
         try { socket.close() } catch (_: Exception) {}
         synchronized(audio) {
             audio.values.forEach { it.release() }
@@ -272,18 +276,91 @@ class HeadUnit(
         }
     }
 
-    /** We have no microphone to offer; accept the requests so Android Auto keeps going. */
+    /**
+     * Android Auto opens the microphone (AVInputOpenRequest, open=true) when the assistant starts
+     * listening; we record from the phone mic and stream the PCM back on this channel, then stop
+     * when it closes the mic. Needs RECORD_AUDIO — if that is missing, recording fails and we just
+     * answer the requests so Android Auto keeps going without voice.
+     */
     private fun handleMic(m: Message) {
         when (m.id) {
             AV_SETUP_REQUEST ->
                 send(CH_MIC, false, AV_SETUP_RESPONSE, Pb().varint(1, 2).varint(2, 10).varint(3, 0).toByteArray())
             MIC_OPEN_REQUEST -> {
+                val open = (Pb.parse(m.body).int(1) ?: 0) != 0
                 send(CH_MIC, false, MIC_OPEN_RESPONSE, Pb().varint(1, 0).varint(2, 0).toByteArray())
-                AppLog.add("Android Auto ביקש מיקרופון (אין לנו, ממשיכים בלעדיו)")
+                if (open) startMic() else stopMic()
             }
             AV_MEDIA_ACK -> Unit
             else -> AppLog.add("הודעת מיקרופון לא מוכרת: ${hex(m.id)}")
         }
+    }
+
+    // ---------------- microphone ----------------
+
+    private val micLock = Any()
+    @Volatile private var mic: AudioRecord? = null
+
+    @SuppressLint("MissingPermission") // guarded by the STATE_INITIALIZED check and a try/catch
+    private fun startMic() = synchronized(micLock) {
+        if (mic != null) return
+        val rate = 16000
+        val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        if (minBuf <= 0) { AppLog.add("מיקרופון לא זמין במכשיר"); return }
+        val rec = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION, rate,
+                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, rate),
+            )
+        } catch (e: Exception) {
+            AppLog.add("אין גישה למיקרופון (${e.javaClass.simpleName})"); return
+        }
+        if (rec.state != AudioRecord.STATE_INITIALIZED) {
+            AppLog.add("המיקרופון לא אותחל (ייתכן שאין הרשאת הקלטה)"); rec.release(); return
+        }
+        mic = rec
+        try { rec.startRecording() } catch (e: Exception) {
+            AppLog.add("הפעלת המיקרופון נכשלה (${e.javaClass.simpleName})"); rec.release(); mic = null; return
+        }
+        AppLog.add("מיקרופון פתוח — העוזר הקולי מקשיב")
+        Thread {
+            val buf = ByteArray(1024) // ~32 ms of 16 kHz mono 16-bit; read() paces it to real time
+            try {
+                while (mic === rec && running) {
+                    val n = rec.read(buf, 0, buf.size)
+                    if (n <= 0) continue
+                    val frame = ByteArray(8 + n)
+                    val ts = System.nanoTime() / 1000
+                    for (i in 0 until 8) frame[i] = (ts shr (56 - i * 8)).toByte()
+                    System.arraycopy(buf, 0, frame, 8, n)
+                    try { send(CH_MIC, false, MEDIA_WITH_TIMESTAMP, frame) } catch (_: Exception) { break }
+                }
+            } catch (_: Exception) {}
+        }, "aa-mic").start()
+    }
+
+    private fun stopMic() = synchronized(micLock) {
+        val rec = mic ?: return
+        mic = null // signals the reader thread to stop
+        try { rec.stop() } catch (_: Exception) {}
+        try { rec.release() } catch (_: Exception) {}
+        AppLog.add("מיקרופון נסגר")
+    }
+
+    /** Presses Android Auto's voice-assistant button, triggered by the 🎤 button on the car screen. */
+    fun sendVoiceAssistant() {
+        if (!inputReady) return
+        sendButton(0x54, true)  // MICROPHONE_1 down
+        sendButton(0x54, false) // up
+        AppLog.add("הופעל עוזר קולי")
+    }
+
+    private fun sendButton(code: Int, pressed: Boolean) {
+        // InputEventIndication{ timestamp=1, button_event=4 -> ButtonEvents{ button_events=1 ->
+        //   ButtonEvent{ scan_code=1, is_pressed=2 } } }
+        val button = Pb().msg(1, Pb().varint(1, code).bool(2, pressed))
+        val event = Pb().varint(1, System.nanoTime() / 1000).msg(4, button)
+        send(CH_INPUT, false, INPUT_EVENT, event.toByteArray())
     }
 
     private fun handleControl(m: Message) {

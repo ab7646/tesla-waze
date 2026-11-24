@@ -217,11 +217,14 @@ class MainActivity : Activity() {
             }
         })
 
+        val wanted = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-        }
+        ) wanted += Manifest.permission.POST_NOTIFICATIONS
+        // The microphone feeds Android Auto's voice assistant (the 🎤 button on the car screen).
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+            wanted += Manifest.permission.RECORD_AUDIO
+        if (wanted.isNotEmpty()) requestPermissions(wanted.toTypedArray(), 1)
 
         maybeAutoLoadCertificate()
     }

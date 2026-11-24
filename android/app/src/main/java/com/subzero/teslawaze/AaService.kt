@@ -4,8 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.Manifest
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.os.IBinder
@@ -58,7 +60,12 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             return START_NOT_STICKY
         }
         if (running) return START_NOT_STICKY
-        startForeground(2, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        // Claim the microphone foreground-service type only when the user granted RECORD_AUDIO,
+        // otherwise startForeground throws and the whole service dies. Without it, voice is just off.
+        var fgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+            fgsType = fgsType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        startForeground(2, buildNotification(), fgsType)
 
         if (!HuCert.isInstalled(this)) return fail("לא נטענה תעודת יחידת ראש")
         if (BuildConfig.RELAY_URL.isEmpty()) return fail("שרת הממסר לא הוגדר בבנייה הזו")
@@ -264,6 +271,12 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             "keyframe" -> {
                 AppLog.add("המסך ביקש תמונה מלאה")
                 transcoder?.requestKeyFrame()
+            }
+            "voice" -> {
+                AppLog.add("הרכב ביקש עוזר קולי")
+                try { headUnit?.sendVoiceAssistant() } catch (e: Exception) {
+                    AppLog.add("הפעלת עוזר קולי נכשלה: ${e.message}")
+                }
             }
             "touch" -> {
                 val hu = headUnit ?: return
