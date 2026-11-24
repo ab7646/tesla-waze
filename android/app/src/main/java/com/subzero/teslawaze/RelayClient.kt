@@ -19,7 +19,7 @@ class RelayClient(private val url: String, private val listener: Listener) : Web
         fun onState(text: String)
     }
 
-    private val client = OkHttpClient.Builder().pingInterval(15, TimeUnit.SECONDS).build()
+    private val client = OkHttpClient.Builder().pingInterval(5, TimeUnit.SECONDS) // notice a dead mobile link within seconds.build()
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
     @Volatile private var ws: WebSocket? = null
     @Volatile private var closed = false

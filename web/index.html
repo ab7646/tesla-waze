@@ -15,6 +15,7 @@
   button { font:inherit; padding:12px 26px; border-radius:10px; border:1px solid #2c333d; background:#24406b; color:#fff; margin:0 6px; }
   button.secondary { background:#1b2027; }
   #code { font:600 96px/1 Consolas, monospace; letter-spacing:12px; direction:ltr; color:#fff; }
+  #audioHint { position:fixed; top:10px; left:10px; font-size:16px; background:rgba(0,0,0,.65); padding:6px 12px; border-radius:8px; pointer-events:none; }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -31,12 +32,13 @@
   </div>
 </div>
 <div id="stats"></div>
+<div id="audioHint" hidden>🔇 גע במסך כדי להפעיל שמע</div>
 
 <script src="config.js"></script>
 <script>
 'use strict';
 // Wire format (binary, phone -> screen):
-//   byte 0      frame type: 1 = codec config (SPS/PPS), 2 = key frame, 3 = delta frame
+//   byte 0      frame type: 1 = codec config (SPS/PPS), 2 = key frame, 3 = delta frame, 4 = audio (see onAudio)
 //   bytes 1-8   presentation timestamp in microseconds (uint64, big-endian)
 //   bytes 9-10  coded width (uint16), bytes 11-12 coded height (uint16)
 //   bytes 13..  H.264 Annex-B payload (key frames carry SPS/PPS in front)
@@ -91,7 +93,7 @@ const codecFromSps = (sps) => 'avc1.' + Array.from(sps, (b) => b.toString(16).pa
 
 // ---------- decoding ----------
 let decoder = null, curCodec = '', curW = 0, curH = 0, needKey = true;
-let lastKeyAsk = 0, lastFrameAt = 0;
+let lastKeyAsk = 0, lastFrameAt = 0, lastDataAt = 0;
 let stat = { frames: 0, bytes: 0, latencyMs: null };
 
 function askKeyFrame() {
@@ -123,9 +125,54 @@ function setupDecoder(codec, w, h) {
   curCodec = codec; curW = w; curH = h; needKey = true;
 }
 
+// ---------- audio (type 4: bytes 9-10 sample rate, 11 channels, 12 stream id, then one Opus packet) ----------
+// Browsers start audio only after a touch, so the context is resumed on the first touch.
+let actx = null;
+const audioStreams = new Map();
+const audioHint = document.getElementById('audioHint');
+function audioCtx() {
+  if (!actx && window.AudioContext) { try { actx = new AudioContext({ latencyHint: 'interactive' }); } catch {} }
+  return actx;
+}
+for (const ev of ['pointerdown', 'pointerup', 'touchend', 'click']) {
+  document.addEventListener(ev, () => {
+    const c = audioCtx();
+    if (c && c.state !== 'running') c.resume().then(() => { audioHint.hidden = true; }).catch(() => {});
+  }, { capture: true });
+}
+function onAudio(dv, buf) {
+  if (!('AudioDecoder' in window)) return;
+  const c = audioCtx(); if (!c) return;
+  if (c.state !== 'running') { audioHint.hidden = false; return; }
+  const rate = dv.getUint16(9), chans = dv.getUint8(11), id = dv.getUint8(12);
+  let s = audioStreams.get(id);
+  if (!s || s.dec.state === 'closed') {
+    s = { playhead: 0, dec: null };
+    s.dec = new AudioDecoder({ output: (d) => playAudio(s, d), error: () => audioStreams.delete(id) });
+    s.dec.configure({ codec: 'opus', sampleRate: rate, numberOfChannels: chans });
+    audioStreams.set(id, s);
+  }
+  s.dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Number(dv.getBigUint64(1)), data: new Uint8Array(buf, 13) }));
+}
+function playAudio(s, data) {
+  const n = data.numberOfFrames, ch = data.numberOfChannels;
+  const ab = actx.createBuffer(ch, n, data.sampleRate);
+  const tmp = new Float32Array(n);
+  for (let i = 0; i < ch; i++) { data.copyTo(tmp, { planeIndex: i, format: 'f32-planar' }); ab.copyToChannel(tmp, i); }
+  data.close();
+  // Small jitter buffer; if the stream fell behind or ran ahead (network gaps), restart it near "now".
+  const now = actx.currentTime;
+  if (s.playhead < now + 0.02 || s.playhead > now + 0.6) s.playhead = now + 0.12;
+  const src = actx.createBufferSource();
+  src.buffer = ab; src.connect(actx.destination); src.start(s.playhead);
+  s.playhead += ab.duration;
+}
+
 function onBinary(buf) {
   const dv = new DataView(buf);
   const type = dv.getUint8(0);
+  lastDataAt = performance.now();
+  if (type === 4) return onAudio(dv, buf);
   const ts = Number(dv.getBigUint64(1));
   const w = dv.getUint16(9), h = dv.getUint16(11);
   const payload = new Uint8Array(buf, 13);
@@ -215,7 +262,7 @@ function connect() {
     let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.type === 'peer') {
       phonePresent = !!m.present;
-      if (phonePresent) { showStatus('הטלפון מחובר. ממתין לווידאו…'); needKey = true; askKeyFrame(); }
+      if (phonePresent) { lastDataAt = performance.now(); showStatus('הטלפון מחובר. ממתין לווידאו…'); needKey = true; askKeyFrame(); }
       else showStatus('הטלפון התנתק. ממתין שיחזור…', 'ההקרנה תחזור אוטומטית.');
     }
   };
@@ -242,6 +289,12 @@ setInterval(() => {
   if (phonePresent && overlay.hidden && performance.now() - lastFrameAt > 3000) {
     showStatus('הווידאו נעצר. ממתין…', 'אם המסך בטלפון כבוי או נעול, השידור מושהה.');
     needKey = true; askKeyFrame();
+  }
+  // A mobile link can die without the socket noticing; if nothing at all arrives for a while, reconnect.
+  if (phonePresent && ws && performance.now() - lastDataAt > 10000) {
+    lastDataAt = performance.now();
+    showStatus('החיבור נתקע, מתחבר מחדש…');
+    attempt = 0; connect();
   }
 }, 1000);
 

@@ -39,6 +39,8 @@ class HeadUnit(
     interface Listener {
         fun onVideoConfig(data: ByteArray)
         fun onVideoFrame(ptsUs: Long, data: ByteArray)
+        /** 16-bit PCM for the car. Return true if it was taken (sent to the car); false plays it on the phone. */
+        fun onAudio(channel: Int, rate: Int, channels: Int, pcm: ByteArray, offset: Int): Boolean = false
     }
 
     companion object {
@@ -249,7 +251,13 @@ class HeadUnit(
             MEDIA_WITH_TIMESTAMP, MEDIA_CODEC_CONFIG -> {
                 // 0x0000 carries an 8-byte timestamp before the PCM; 0x0001 is PCM alone.
                 val offset = if (m.id == MEDIA_WITH_TIMESTAMP) 8 else 0
-                if (m.body.size > offset) audioOut(m.channel).write(m.body, offset)
+                if (m.body.size > offset) {
+                    val stereo = m.channel == CH_MEDIA_AUDIO
+                    val toCar = try {
+                        listener.onAudio(m.channel, if (stereo) 48000 else 16000, if (stereo) 2 else 1, m.body, offset)
+                    } catch (_: Exception) { false }
+                    if (!toCar) audioOut(m.channel).write(m.body, offset)
+                }
                 val session = audioSession[m.channel] ?: 0
                 send(m.channel, false, AV_MEDIA_ACK, Pb().varint(1, session).varint(2, 1).toByteArray())
             }

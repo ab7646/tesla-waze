@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.os.IBinder
+import com.subzero.teslawaze.aa.AudioEncoder
 import com.subzero.teslawaze.aa.HeadUnit
 import com.subzero.teslawaze.aa.HuCert
 import com.subzero.teslawaze.aa.Transcoder
@@ -26,6 +27,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         const val ACTION_STOP = "com.subzero.teslawaze.AA_STOP"
         private const val CHANNEL = "android_auto"
         private const val MAX_QUEUE_BYTES = 512L * 1024
+        private const val RECOVER_QUEUE_BYTES = 64L * 1024
         private const val START_BITRATE = 1_500_000
         private const val MIN_BITRATE = 500_000
         private const val MAX_BITRATE = 3_000_000
@@ -42,6 +44,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     @Volatile private var screenPresent = false
     @Volatile private var codecConfig: ByteArray? = null
     @Volatile private var needKey = true
+    @Volatile private var congested = false
     @Volatile private var sentFrames = 0
     @Volatile private var transcoder: Transcoder? = null
     @Volatile private var bitRate = START_BITRATE
@@ -137,23 +140,78 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
                 codecConfig = data
                 if (screenPresent) sendFrame(1, 0, data)
             }
-            H264Encoder.KEY -> {
-                if (!screenPresent) return
-                needKey = false
-                sendFrame(2, ptsUs, data)
-            }
             else -> {
-                if (!screenPresent || needKey) return
+                if (!screenPresent) return
                 val r = relay ?: return
-                if (r.queued() > MAX_QUEUE_BYTES) {
+                val q = r.queued()
+                if (congested) {
+                    // Wait until what is already queued has gone out, then restart from one key frame.
+                    // (Asking for key frames while the queue is still full only piles on more data.)
+                    if (q > RECOVER_QUEUE_BYTES) return
+                    congested = false
                     needKey = true
-                    AppLog.add("החיבור לרכב איטי, מדלג על תמונות")
                     transcoder?.requestKeyFrame()
+                    AppLog.add("החיבור לרכב התאושש")
+                }
+                if (q > MAX_QUEUE_BYTES) {
+                    congested = true
+                    needKey = true
+                    setBitrate(maxOf(MIN_BITRATE, bitRate / 2))
+                    AppLog.add("החיבור לרכב איטי, ממתין שיתפנה (${q / 1024} KB בתור)")
                     return
                 }
-                sendFrame(3, ptsUs, data)
+                if (type == H264Encoder.KEY) {
+                    needKey = false
+                    sendFrame(2, ptsUs, data)
+                } else if (!needKey) {
+                    sendFrame(3, ptsUs, data)
+                }
             }
         }
+    }
+
+    private fun setBitrate(next: Int) {
+        if (next == bitRate) return
+        if (next < bitRate) AppLog.add("מוריד איכות ל-${next / 1000} kbps")
+        bitRate = next
+        transcoder?.setBitrate(next)
+    }
+
+    // ---- audio to the car ----
+    // Android Auto's audio goes to the Tesla page (Opus over the relay) while the page is open;
+    // otherwise it plays on the phone as before.
+
+    private val audioEncoders = HashMap<Int, AudioEncoder>()
+    @Volatile private var audioFailed = false
+
+    override fun onAudio(channel: Int, rate: Int, channels: Int, pcm: ByteArray, offset: Int): Boolean {
+        if (!screenPresent || audioFailed) return false
+        val r = relay ?: return false
+        val enc = synchronized(audioEncoders) {
+            audioEncoders[channel] ?: try {
+                AudioEncoder(rate, channels, if (channels == 2) 64_000 else 24_000) { pts, data ->
+                    sendAudio(channel, rate, channels, pts, data)
+                }.also { audioEncoders[channel] = it }
+            } catch (e: Exception) {
+                audioFailed = true
+                AppLog.add("אין מקודד שמע (${e.javaClass.simpleName}), השמע יישאר בטלפון")
+                null
+            }
+        } ?: return false
+        if (r.queued() <= MAX_QUEUE_BYTES) enc.feed(pcm, offset) // a clogged link drops audio, not video
+        return true
+    }
+
+    private fun sendAudio(channel: Int, rate: Int, channels: Int, ptsUs: Long, data: ByteArray) {
+        val packet = ByteBuffer.allocate(13 + data.size)
+            .put(4.toByte())
+            .putLong(ptsUs)
+            .putShort(rate.toShort())
+            .put(channels.toByte())
+            .put(channel.toByte())
+            .put(data)
+            .array()
+        relay?.send(packet)
     }
 
     /** Lowers the bitrate quickly when data piles up on the phone, raises it slowly when the link is clear. */
@@ -171,11 +229,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
                 next = minOf(MAX_BITRATE, (bitRate * 1.15).toInt())
                 calm = 0
             }
-            if (next != bitRate) {
-                if (next < bitRate) AppLog.add("מוריד איכות ל-${next / 1000} kbps")
-                bitRate = next
-                transcoder?.setBitrate(next)
-            }
+            setBitrate(next)
             AppLog.status = "משדר לטסלה · ${bitRate / 1000} kbps"
         }
     }
@@ -196,6 +250,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     override fun onPeer(present: Boolean) {
         screenPresent = present
         needKey = true
+        congested = false
         AppLog.add(if (present) "הטסלה התחברה" else "הטסלה התנתקה")
         AppLog.status = if (present) "הטסלה מחוברת" else "ממתין לטסלה"
         if (present) {
@@ -256,6 +311,10 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         bitrateThread?.interrupt()
         transcoder?.release()
         transcoder = null
+        synchronized(audioEncoders) {
+            audioEncoders.values.forEach { it.release() }
+            audioEncoders.clear()
+        }
         relay?.close()
         relay = null
         screenPresent = false
