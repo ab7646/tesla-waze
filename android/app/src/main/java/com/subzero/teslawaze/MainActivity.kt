@@ -65,26 +65,41 @@ class MainActivity : Activity() {
         Button(this).apply {
             this.text = text
             isAllCaps = false
-            textSize = if (big) 19f else 16f
+            textSize = if (big) 18f else 15f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             setTextColor(if (filled) Color.WHITE else color)
             stateListAnimator = null
-            val bg = rounded(if (filled) color else (color and 0x00FFFFFF) or 0x1F000000, 18)
+            minHeight = 0
+            minimumHeight = 0
+            val bg = rounded(if (filled) color else (color and 0x00FFFFFF) or 0x1F000000, 16)
             background = RippleDrawable(ColorStateList.valueOf(if (filled) 0x40FFFFFF else (color and 0x00FFFFFF) or 0x33000000), bg, null)
-            setPadding(dp(16), dp(if (big) 18 else 13), dp(16), dp(if (big) 18 else 13))
+            setPadding(dp(10), dp(if (big) 14 else 11), dp(10), dp(if (big) 14 else 11))
             elevation = if (filled) dp(3).toFloat() else 0f
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                .apply { topMargin = dp(10) }
+                .apply { topMargin = dp(8) }
             setOnClickListener { onClick() }
         }
 
+    /** Puts views side by side, sharing the width by the given weights (default: equally). */
+    private fun row(vararg items: Pair<View, Float>) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        items.forEachIndexed { i, (v, weight) ->
+            addView(v, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight).apply {
+                if (i > 0) marginStart = dp(8)
+            })
+        }
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = dp(8) }
+    }
+
     private fun card(vararg children: View) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = rounded(Color.WHITE, 24)
+        background = rounded(Color.WHITE, 20)
         elevation = dp(2).toFloat()
-        setPadding(dp(18), dp(16), dp(18), dp(18))
+        setPadding(dp(14), dp(12), dp(14), dp(14))
         layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            .apply { topMargin = dp(14) }
+            .apply { topMargin = dp(10) }
         children.forEach { addView(it) }
     }
 
@@ -95,7 +110,7 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(dp(16), dp(16), dp(16), dp(24))
+            setPadding(dp(14), dp(12), dp(14), dp(16))
         }
 
         // ---- header: gradient with the title and a live status pill ----
@@ -117,47 +132,40 @@ class MainActivity : Activity() {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TR_BL,
                 intArrayOf(0xFF33CCFF.toInt(), 0xFF7B61FF.toInt(), 0xFFFF5FA2.toInt()),
-            ).apply { cornerRadius = dp(28).toFloat() }
+            ).apply { cornerRadius = dp(22).toFloat() }
             elevation = dp(4).toFloat()
-            setPadding(dp(20), dp(22), dp(20), dp(20))
-            addView(label("🚗  Waze לטסלה", 28f, Color.WHITE, bold = true))
-            addView(label("Waze על המסך של הרכב, והטלפון נשאר חופשי", 15f, 0xE6FFFFFF.toInt()))
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            addView(label("🚗  Waze לטסלה", 22f, Color.WHITE, bold = true))
             addView(pill, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                .apply { topMargin = dp(14) })
+                .apply { topMargin = dp(8) })
         })
 
-        // ---- main action ----
+        // ---- main action: start and stop side by side ----
         root.addView(card(
-            label("אנדרואיד אוטו", 20f, bold = true),
-            label("Waze רץ ברקע בטלפון ומוצג על מסך הטסלה.", 14f, MUTED),
-            button("▶  התחל", GREEN, big = true) { startAndroidAuto() },
-            button("■  עצור", CORAL, filled = false) {
-                startService(Intent(this, AaService::class.java).setAction(AaService.ACTION_STOP))
-            },
+            label("אנדרואיד אוטו", 18f, bold = true),
+            row(
+                button("▶  התחל", GREEN, big = true) { startAndroidAuto() } to 2f,
+                button("■  עצור", CORAL, filled = false, big = true) {
+                    startService(Intent(this, AaService::class.java).setAction(AaService.ACTION_STOP))
+                } to 1f,
+            ),
         ))
 
-        // ---- pairing ----
+        // ---- pairing: the address and the button on one line ----
         root.addView(card(
-            label("חיבור לרכב", 20f, bold = true),
-            label("פעם אחת: בדפדפן של הטסלה הקלד את הכתובת, ואז לחץ על הכפתור והקלד את הקוד שמופיע ברכב.", 14f, MUTED),
-            label(shortHost, 20f, BLUE, bold = true).apply {
-                setTextIsSelectable(true)
-                textDirection = View.TEXT_DIRECTION_LTR
-                setPadding(0, dp(8), 0, 0)
-            },
-            button("🔗  חבר לרכב", BLUE) { askPairingCode() },
+            label("חיבור לרכב (פעם אחת)", 18f, bold = true),
+            label("פתח בדפדפן הטסלה את הכתובת, לחץ \"חבר\" והקלד את הקוד שמופיע ברכב.", 13f, MUTED),
+            row(
+                label(shortHost, 16f, BLUE, bold = true).apply {
+                    setTextIsSelectable(true)
+                    textDirection = View.TEXT_DIRECTION_LTR
+                } to 1.6f,
+                button("🔗  חבר", BLUE) { askPairingCode() } to 1f,
+            ),
         ))
 
-        // ---- setup ----
-        certInfo = label("", 13f, MUTED)
-        root.addView(card(
-            label("הגדרות", 20f, bold = true),
-            certInfo,
-            button("⚙️  הגדרות Android Auto", PURPLE, filled = false) { openAndroidAutoSettings() },
-            button("📄  טען תעודת יחידת ראש", ORANGE, filled = false) { pickCertificate() },
-        ))
-
-        // ---- log (collapsed by default) ----
+        // ---- tools: settings, certificate and log in a 2x2 grid ----
+        certInfo = label("", 12f, MUTED)
         log = label("", 11f, 0xFFCFE3FF.toInt()).apply {
             setTextIsSelectable(true)
             typeface = Typeface.MONOSPACE
@@ -165,29 +173,37 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                .apply { topMargin = dp(10) }
+                .apply { topMargin = dp(8) }
         }
         lateinit var toggle: Button
-        toggle = button("📋  הצג יומן", SLATE, filled = false) {
+        toggle = button("📋  יומן", SLATE, filled = false) {
             val show = log.visibility != View.VISIBLE
             log.visibility = if (show) View.VISIBLE else View.GONE
-            toggle.text =if (show) "📋  הסתר יומן" else "📋  הצג יומן"
+            toggle.text = if (show) "📋  הסתר" else "📋  יומן"
             if (show) log.text = AppLog.text()
         }
         root.addView(card(
-            label("יומן", 20f, bold = true),
-            toggle,
-            button("📤  שתף את היומן", SLATE, filled = false) {
-                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, AppLog.text())
-                startActivity(Intent.createChooser(send, null))
-            },
+            label("כלים", 18f, bold = true),
+            certInfo,
+            row(
+                button("⚙️  Android Auto", PURPLE, filled = false) { openAndroidAutoSettings() } to 1f,
+                button("📄  תעודה", ORANGE, filled = false) { pickCertificate() } to 1f,
+            ),
+            row(
+                toggle to 1f,
+                button("📤  שתף יומן", SLATE, filled = false) {
+                    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, AppLog.text())
+                    startActivity(Intent.createChooser(send, null))
+                } to 1f,
+            ),
             log,
         ))
+
 
         if (BuildConfig.RELAY_URL.isEmpty()) root.addView(label("שים לב: בבנייה הזו לא הוגדר שרת ממסר (RELAY_URL).", 14f, CORAL))
         root.addView(label("גרסה ${BuildConfig.VERSION_NAME}", 12f, MUTED).apply {
             gravity = Gravity.CENTER
-            setPadding(0, dp(16), 0, 0)
+            setPadding(0, dp(10), 0, 0)
         })
 
         setContentView(ScrollView(this).apply {
