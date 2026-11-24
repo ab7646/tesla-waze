@@ -3,18 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Waze לטסלה (מקומי)</title>
+<title>AA 2 TESLA (מקומי)</title>
 <style>
-  html, body { margin:0; height:100%; background:#000; color:#e8ecf1; font:20px/1.5 system-ui, "Segoe UI", Arial, sans-serif; overflow:hidden; }
+  :root { --mint:#00F5D4; --ink:#F3F4F6; --muted:#9CA3AF; --bg:#0B0E14; --float:#1F242D; }
+  html, body { margin:0; height:100%; background:#000; color:var(--ink); font:20px/1.5 "Heebo", system-ui, "Segoe UI", Arial, sans-serif; overflow:hidden; }
   #player { position:fixed; inset:0; width:100vw; height:100vh; object-fit:contain; background:#000; touch-action:none; }
-  #overlay { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:24px; background:#0d1117; }
+  #overlay { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; text-align:center; padding:24px; background:var(--bg);
+    background-image: radial-gradient(600px 400px at 50% 18%, rgba(0,245,212,.10), transparent 60%); }
   #overlay[hidden] { display:none; }
-  #status { font-size:26px; max-width:900px; }
-  #hint { color:#9aa4b2; font-size:18px; max-width:900px; }
-  #stats { position:fixed; bottom:6px; left:10px; font:13px/1.2 Consolas, monospace; color:#9aa4b2; background:rgba(0,0,0,.45); padding:3px 7px; border-radius:6px; direction:ltr; pointer-events:none; }
-  #audioHint { position:fixed; top:10px; left:10px; font-size:16px; background:rgba(0,0,0,.65); padding:6px 12px; border-radius:8px; pointer-events:none; }
-  #micBtn { position:fixed; bottom:18px; right:18px; width:72px; height:72px; border-radius:50%; border:none; font-size:34px; background:#24406b; color:#fff; box-shadow:0 3px 14px rgba(0,0,0,.55); z-index:5; touch-action:manipulation; }
-  #micBtn:active { background:#1b2d4d; transform:scale(.94); }
+  #status { font-size:27px; font-weight:700; max-width:900px; }
+  #hint { color:var(--muted); font-size:18px; max-width:900px; }
+  #stats { position:fixed; bottom:8px; left:12px; font:13px/1.2 "JetBrains Mono", Consolas, monospace; color:var(--mint); background:rgba(11,14,20,.6); border:1px solid rgba(0,245,212,.25); padding:4px 9px; border-radius:8px; direction:ltr; pointer-events:none; }
+  #audioHint { position:fixed; top:12px; left:12px; font-size:16px; color:var(--ink); background:rgba(11,14,20,.7); border:1px solid rgba(255,255,255,.1); padding:7px 13px; border-radius:10px; pointer-events:none; }
+  #micBtn { position:fixed; bottom:18px; right:18px; width:72px; height:72px; border-radius:50%; border:1.5px solid var(--mint); font-size:34px; background:rgba(0,245,212,.1); color:var(--mint); box-shadow:0 0 26px rgba(0,245,212,.3); z-index:5; touch-action:manipulation; }
+  #micBtn:active { background:rgba(0,245,212,.2); transform:scale(.94); }
   [hidden] { display:none !important; }
 </style>
 </head>

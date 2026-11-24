@@ -3,22 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Waze לטסלה</title>
+<title>AA 2 TESLA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700;800&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
 <style>
-  html, body { margin:0; height:100%; background:#000; color:#e8ecf1; font:20px/1.5 system-ui, "Segoe UI", Arial, sans-serif; overflow:hidden; }
+  :root { --mint:#00F5D4; --cyber:#00BBF9; --ink:#F3F4F6; --muted:#9CA3AF; --bg:#0B0E14; --float:#1F242D; }
+  html, body { margin:0; height:100%; background:#000; color:var(--ink); font:20px/1.5 "Heebo", system-ui, "Segoe UI", Arial, sans-serif; overflow:hidden; }
   #screen { position:fixed; inset:0; width:100vw; height:100vh; object-fit:contain; touch-action:none; }
-  #overlay { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; text-align:center; padding:24px; background:#0d1117; }
+  #overlay { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; text-align:center; padding:24px; background:var(--bg);
+    background-image: radial-gradient(600px 400px at 50% 18%, rgba(0,245,212,.10), transparent 60%), radial-gradient(500px 400px at 80% 100%, rgba(0,187,249,.08), transparent 60%); }
   #overlay[hidden] { display:none; }
-  #status { font-size:26px; max-width:900px; }
-  #hint { color:#9aa4b2; font-size:18px; max-width:900px; }
-  #stats { position:fixed; bottom:6px; left:10px; font:13px/1.2 Consolas, monospace; color:#9aa4b2; background:rgba(0,0,0,.45); padding:3px 7px; border-radius:6px; direction:ltr; pointer-events:none; }
-  button { font:inherit; padding:12px 26px; border-radius:10px; border:1px solid #2c333d; background:#24406b; color:#fff; margin:0 6px; }
-  button.secondary { background:#1b2027; }
-  #code { font:600 96px/1 Consolas, monospace; letter-spacing:12px; direction:ltr; color:#fff; }
-  #audioHint { position:fixed; top:10px; left:10px; font-size:16px; background:rgba(0,0,0,.65); padding:6px 12px; border-radius:8px; pointer-events:none; }
-  #reconnBadge { position:fixed; top:10px; left:50%; transform:translateX(-50%); font-size:16px; background:rgba(0,0,0,.6); color:#e8ecf1; padding:6px 14px; border-radius:20px; pointer-events:none; }
-  #micBtn { position:fixed; bottom:18px; right:18px; width:72px; height:72px; border-radius:50%; border:none; font-size:34px; background:#24406b; color:#fff; box-shadow:0 3px 14px rgba(0,0,0,.55); z-index:5; touch-action:manipulation; }
-  #micBtn:active { background:#1b2d4d; transform:scale(.94); }
+  #status { font-size:27px; font-weight:700; max-width:900px; }
+  #hint { color:var(--muted); font-size:18px; max-width:900px; }
+  #stats { position:fixed; bottom:8px; left:12px; font:13px/1.2 "JetBrains Mono", Consolas, monospace; color:var(--mint); background:rgba(11,14,20,.6); border:1px solid rgba(0,245,212,.25); padding:4px 9px; border-radius:8px; direction:ltr; pointer-events:none; }
+  button { font:inherit; font-weight:700; padding:13px 28px; border-radius:13px; border:1px solid var(--mint); background:var(--mint); color:#04221c; margin:0 6px; box-shadow:0 0 22px rgba(0,245,212,.22); }
+  button.secondary { background:var(--float); color:var(--muted); border-color:rgba(255,255,255,.1); box-shadow:none; }
+  #code { font:700 96px/1 "JetBrains Mono", Consolas, monospace; letter-spacing:12px; direction:ltr; color:var(--mint); text-shadow:0 0 24px rgba(0,245,212,.55); }
+  #audioHint { position:fixed; top:12px; left:12px; font-size:16px; color:var(--ink); background:rgba(11,14,20,.7); border:1px solid rgba(255,255,255,.1); padding:7px 13px; border-radius:10px; pointer-events:none; }
+  #reconnBadge { position:fixed; top:12px; left:50%; transform:translateX(-50%); font-size:16px; color:var(--mint); background:rgba(11,14,20,.65); border:1px solid rgba(0,245,212,.35); padding:7px 15px; border-radius:50px; pointer-events:none; box-shadow:0 0 18px rgba(0,245,212,.18); }
+  #micBtn { position:fixed; bottom:18px; right:18px; width:72px; height:72px; border-radius:50%; border:1.5px solid var(--mint); font-size:34px; background:rgba(0,245,212,.1); color:var(--mint); box-shadow:0 0 26px rgba(0,245,212,.3); z-index:5; touch-action:manipulation; }
+  #micBtn:active { background:rgba(0,245,212,.2); transform:scale(.94); }
   [hidden] { display:none !important; }
 </style>
 </head>

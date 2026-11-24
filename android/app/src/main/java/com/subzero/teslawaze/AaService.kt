@@ -47,6 +47,11 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             private set
         @Volatile var localUrl: String? = null
             private set
+        /** Live telemetry for the UI: frames per second sent, and the current encode bitrate (kbps). */
+        @Volatile var fps = 0
+            private set
+        @Volatile var kbps = 0
+            private set
 
         /**
          * The phone's own address on its Wi-Fi hotspot (the Tesla's gateway), as a URL to open in
@@ -296,6 +301,8 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             try { Thread.sleep(1000) } catch (_: InterruptedException) { return }
             headUnit?.refreshNight() // follow day/night even while parked / between screens
             if (localActive && localUrl == null) localUrl = hotspotUrl() // hotspot may come up late
+            val sampled = sentFrames; sentFrames = 0; fps = sampled // frames sent in the last second
+            kbps = if (screenPresent) bitRate / 1000 else 0
             if (!screenPresent) continue
             val q = relay?.queued() ?: continue
             var next = bitRate
@@ -435,7 +442,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         )
         val open = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CHANNEL)
-            .setContentTitle("Waze לטסלה")
+            .setContentTitle("AA 2 TESLA")
             .setContentText("מצב אנדרואיד אוטו פעיל")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setOngoing(true)

@@ -6,11 +6,11 @@ import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -30,6 +30,11 @@ import android.widget.TextView
 import android.widget.Toast
 import com.subzero.teslawaze.aa.HuCert
 
+/**
+ * The app's one screen, in a dark "neon premium" style: a deep charcoal base, cards a step lighter
+ * for depth, softened white text, and electric-mint accents used sparingly on the live data and the
+ * primary action.
+ */
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var statusDot: View
@@ -37,21 +42,29 @@ class MainActivity : Activity() {
     private lateinit var log: TextView
     private lateinit var localInfo: TextView
     private lateinit var localBtn: Button
+    private lateinit var fpsNum: TextView
+    private lateinit var kbpsNum: TextView
+    private lateinit var spark: SparklineView
     private val ui = Handler(Looper.getMainLooper())
     private var autoStarted = false
+
     private val tick = object : Runnable {
         override fun run() {
+            val running = AaService.running
             status.text = AppLog.status.ifEmpty { "מוכן" }
-            (statusDot.background as GradientDrawable).setColor(if (AaService.running) GREEN else 0x66FFFFFF)
+            (statusDot.background as GradientDrawable).setColor(if (running) MINT else DIM)
+            fpsNum.text = if (running) AaService.fps.toString() else "—"
+            kbpsNum.text = if (running && AaService.kbps > 0) "%.1f".format(AaService.kbps / 1000f) else "—"
+            spark.push(if (running) AaService.fps.toFloat() else 0f)
             if (log.visibility == View.VISIBLE) log.text = AppLog.text()
-            certInfo.text = HuCert.describe(this@MainActivity)?.let { "✓ תעודה טעונה: $it" } ?: "לא נטענה תעודת יחידת ראש"
+            certInfo.text = HuCert.describe(this@MainActivity)?.let { "תעודה טעונה ✓" } ?: "לא נטענה תעודה"
             val hotspot = AaService.hotspotUrl()
             if (AaService.localActive) {
-                localBtn.text = "⏹  כבה חיבור מקומי"
-                localInfo.text = hotspot?.let { "פתח בדפדפן הטסלה:  $it" } ?: "נקודה חמה כבויה — הפעל אותה בטלפון"
+                localBtn.text = "כבה חיבור מקומי"
+                localInfo.text = hotspot?.let { "פתח בטסלה:  $it" } ?: "נקודה חמה כבויה — הפעל אותה בטלפון"
             } else {
-                localBtn.text = "📶  הפעל חיבור מקומי (הוט ספוט)"
-                localInfo.text = if (hotspot != null) "✓ נקודה חמה פעילה" else ""
+                localBtn.text = "הפעל חיבור מקומי"
+                localInfo.text = if (hotspot != null) "נקודה חמה פעילה ✓" else "מצריך נקודה חמה פעילה"
             }
             ui.postDelayed(this, 500)
         }
@@ -59,184 +72,239 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
+    private fun rounded(color: Int, radius: Int, stroke: Int = 0, strokeColor: Int = 0) = GradientDrawable().apply {
         setColor(color)
         cornerRadius = dp(radius).toFloat()
+        if (stroke > 0) setStroke(dp(stroke), strokeColor)
     }
 
     private fun label(text: String, size: Float, color: Int = INK, bold: Boolean = false) = TextView(this).apply {
         this.text = text
         textSize = size
         setTextColor(color)
-        if (bold) typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        setLineSpacing(0f, 1.15f)
+        typeface = if (bold) Typeface.create("sans-serif-medium", Typeface.BOLD) else Typeface.DEFAULT
+        setLineSpacing(0f, 1.2f)
     }
 
-    /** Rounded, colorful button with a ripple. Filled buttons have white text; soft ones a light tint of their color. */
-    private fun button(text: String, color: Int, filled: Boolean = true, big: Boolean = false, onClick: () -> Unit) =
+    /** Small uppercase, letter-spaced section label. */
+    private fun eyebrow(text: String) = TextView(this).apply {
+        this.text = text
+        textSize = 11.5f
+        setTextColor(DIM)
+        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        letterSpacing = 0.12f
+        isAllCaps = true
+    }
+
+    /**
+     * filled → solid accent fill with dark text (the one primary action); otherwise a quiet elevated
+     * surface with the accent as the text color.
+     */
+    private fun button(text: String, accent: Int, filled: Boolean = false, big: Boolean = false, onClick: () -> Unit) =
         Button(this).apply {
             this.text = text
             isAllCaps = false
-            textSize = if (big) 18f else 15f
+            textSize = if (big) 16f else 14f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setTextColor(if (filled) Color.WHITE else color)
+            setTextColor(if (filled) 0xFF04221C.toInt() else accent)
             stateListAnimator = null
-            minHeight = 0
-            minimumHeight = 0
-            val bg = rounded(if (filled) color else (color and 0x00FFFFFF) or 0x1F000000, 16)
-            background = RippleDrawable(ColorStateList.valueOf(if (filled) 0x40FFFFFF else (color and 0x00FFFFFF) or 0x33000000), bg, null)
-            setPadding(dp(10), dp(if (big) 14 else 11), dp(10), dp(if (big) 14 else 11))
-            elevation = if (filled) dp(3).toFloat() else 0f
+            minHeight = 0; minimumHeight = 0
+            val bg = if (filled) rounded(accent, 12)
+            else rounded(FLOAT, 12, 1, LINE)
+            val ripple = if (filled) 0x40FFFFFF else (accent and 0x00FFFFFF) or 0x33000000
+            background = RippleDrawable(ColorStateList.valueOf(ripple), bg, null)
+            setPadding(dp(10), dp(if (big) 14 else 12), dp(10), dp(if (big) 14 else 12))
+            elevation = 0f
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
                 .apply { topMargin = dp(8) }
             setOnClickListener { onClick() }
         }
 
-    /** Puts views side by side, sharing the width by the given weights (default: equally). */
     private fun row(vararg items: Pair<View, Float>) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         items.forEachIndexed { i, (v, weight) ->
             addView(v, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight).apply {
-                if (i > 0) marginStart = dp(8)
+                if (i > 0) marginStart = dp(10)
             })
         }
         layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             .apply { topMargin = dp(8) }
     }
 
-    private fun card(vararg children: View) = LinearLayout(this).apply {
+    private fun card(accent: Boolean, children: List<View>) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = rounded(Color.WHITE, 20)
-        elevation = dp(2).toFloat()
-        setPadding(dp(14), dp(12), dp(14), dp(14))
+        background = if (accent) rounded(CARD, 16, 1, 0x4D00F5D4) else rounded(CARD, 16, 1, LINE)
+        setPadding(dp(16), dp(15), dp(16), dp(16))
         layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            .apply { topMargin = dp(10) }
+            .apply { topMargin = dp(12) }
         children.forEach { addView(it) }
+    }
+
+    /** A telemetry tile: big mono number + unit over a small label. */
+    private fun metric(value: TextView, unit: String, caption: String) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = rounded(FLOAT, 12)
+        setPadding(dp(12), dp(10), dp(12), dp(11))
+        value.apply {
+            textSize = 23f
+            setTextColor(INK)
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        }
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+            addView(value)
+            addView(label(" $unit", 11f, DIM).apply { typeface = Typeface.MONOSPACE; setPadding(0, 0, 0, dp(3)) })
+        })
+        addView(label(caption, 11f, MUTED).apply { setPadding(0, dp(2), 0, 0) })
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = BG
+        window.navigationBarColor = BG
         val shortHost = Uri.parse(BuildConfig.SCREEN_URL).host ?: BuildConfig.SCREEN_URL
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(dp(14), dp(12), dp(14), dp(16))
+            setPadding(dp(16), dp(14), dp(16), dp(18))
         }
 
-        // ---- header: gradient with the title and a live status pill ----
-        statusDot = View(this).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x66FFFFFF) }
-            layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(8) }
+        // ---- header: brand + live status pill ----
+        val mark = label("▶", 20f, MINT, bold = true).apply {
+            gravity = Gravity.CENTER
+            background = rounded(FLOAT, 12, 1, 0x4000F5D4)
+            layoutParams = LinearLayout.LayoutParams(dp(42), dp(42))
+            setPadding(0, 0, 0, dp(2))
         }
-        status = label("", 15f, Color.WHITE, bold = true)
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(label("AA 2 TESLA", 20f, INK, bold = true).apply { letterSpacing = 0.02f })
+            addView(label("Android Auto → Tesla", 12f, DIM))
+        }
+        statusDot = View(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(DIM) }
+            layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(7) }
+        }
+        status = label("מוכן", 12.5f, MINT, bold = true)
         val pill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = rounded(0x33FFFFFF, 50)
-            setPadding(dp(14), dp(8), dp(14), dp(8))
+            background = rounded(0x1400F5D4, 50, 1, 0x3300F5D4)
+            setPadding(dp(12), dp(7), dp(12), dp(7))
             addView(statusDot)
             addView(status)
         }
         root.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TR_BL,
-                intArrayOf(0xFF33CCFF.toInt(), 0xFF7B61FF.toInt(), 0xFFFF5FA2.toInt()),
-            ).apply { cornerRadius = dp(22).toFloat() }
-            elevation = dp(4).toFloat()
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            addView(label("🚗  Waze לטסלה", 22f, Color.WHITE, bold = true))
-            addView(pill, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                .apply { topMargin = dp(8) })
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(mark, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(11) })
+            addView(brand, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(pill)
         })
 
-        // ---- main action: start and stop side by side ----
-        root.addView(card(
-            label("אנדרואיד אוטו", 18f, bold = true),
-            label("נפתח אוטומטית בכל פתיחה של האפליקציה. \"התחל\" מפעיל ידנית וגם פותח את Android Auto אם צריך.", 12f, MUTED),
+        // ---- live telemetry ----
+        fpsNum = TextView(this).apply { text = "—" }
+        kbpsNum = TextView(this).apply { text = "—" }
+        spark = SparklineView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52))
+                .apply { topMargin = dp(10) }
+        }
+        root.addView(card(true, listOf(
+            eyebrow("שידור חי"),
             row(
-                button("▶  התחל", GREEN, big = true) { startAndroidAuto() } to 2f,
-                button("■  עצור", CORAL, filled = false, big = true) {
-                    autoStarted = true // a manual stop shouldn't be undone by the auto-start on the next resume
+                metric(fpsNum, "fps", "קצב פריימים") to 1f,
+                metric(kbpsNum, "Mbps", "ביטרייט") to 1f,
+            ),
+            spark,
+        )))
+
+        // ---- main action ----
+        root.addView(card(false, listOf(
+            eyebrow("אנדרואיד אוטו"),
+            label("נפתח אוטומטית בכל פתיחה של האפליקציה.", 13f, MUTED),
+            row(
+                button("התחל", MINT, filled = true, big = true) { startAndroidAuto() } to 2f,
+                button("עצור", CORAL, big = true) {
+                    autoStarted = true
                     startService(Intent(this, AaService::class.java).setAction(AaService.ACTION_STOP))
                 } to 1f,
             ),
-        ))
+        )))
 
-        // ---- pairing: the address and the button on one line ----
-        root.addView(card(
-            label("חיבור לרכב (פעם אחת)", 18f, bold = true),
-            label("פתח בדפדפן הטסלה את הכתובת, לחץ \"חבר\" והקלד את הקוד שמופיע ברכב.", 13f, MUTED),
-            row(
-                label(shortHost, 16f, BLUE, bold = true).apply {
-                    setTextIsSelectable(true)
-                    textDirection = View.TEXT_DIRECTION_LTR
-                } to 1.6f,
-                button("🔗  חבר", BLUE) { askPairingCode() } to 1f,
-            ),
-        ))
-
-        // ---- local hotspot mode: direct phone <-> Tesla, no internet ----
-        localInfo = label("", 13f, TEAL, bold = true).apply {
+        // ---- local hotspot ----
+        localInfo = label("", 12.5f, MINT, bold = true).apply {
             setTextIsSelectable(true)
             textDirection = View.TEXT_DIRECTION_LTR
         }
-        localBtn = button("📶  הפעל חיבור מקומי (הוט ספוט)", TEAL) { toggleLocal() }
-        root.addView(card(
-            label("חיבור מקומי (ללא אינטרנט)", 18f, bold = true),
-            label("לקטעים בלי קליטה: הפעל נקודה חמה בטלפון, חבר את הטסלה ל-WiFi של הטלפון, הפעל כאן, ופתח בדפדפן הטסלה את הכתובת שתופיע.", 13f, MUTED),
+        localBtn = button("הפעל חיבור מקומי", MINT) { toggleLocal() }
+        root.addView(card(false, listOf(
+            eyebrow("חיבור מקומי · ללא אינטרנט"),
             localInfo,
             localBtn,
-        ))
+        )))
 
-        // ---- tools: settings, certificate and log in a 2x2 grid ----
-        certInfo = label("", 12f, MUTED)
-        log = label("", 11f, 0xFFCFE3FF.toInt()).apply {
+        // ---- pairing ----
+        root.addView(card(false, listOf(
+            eyebrow("חיבור לרכב · פעם אחת"),
+            row(
+                label(shortHost, 14f, CYBER, bold = true).apply {
+                    setTextIsSelectable(true)
+                    textDirection = View.TEXT_DIRECTION_LTR
+                    typeface = Typeface.MONOSPACE
+                } to 1.6f,
+                button("חבר", CYBER) { askPairingCode() } to 1f,
+            ),
+        )))
+
+        // ---- tools ----
+        certInfo = label("", 12.5f, MUTED)
+        log = label("", 11f, 0xFFB9F3EA.toInt()).apply {
             setTextIsSelectable(true)
             typeface = Typeface.MONOSPACE
-            background = rounded(0xFF1E2235.toInt(), 14)
+            background = rounded(0xFF0B0E14.toInt(), 12, 1, LINE)
             setPadding(dp(12), dp(10), dp(12), dp(10))
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
                 .apply { topMargin = dp(8) }
         }
         lateinit var toggle: Button
-        toggle = button("📋  יומן", SLATE, filled = false) {
+        toggle = button("יומן", MUTED) {
             val show = log.visibility != View.VISIBLE
             log.visibility = if (show) View.VISIBLE else View.GONE
-            toggle.text = if (show) "📋  הסתר" else "📋  יומן"
+            toggle.text = if (show) "הסתר יומן" else "יומן"
             if (show) log.text = AppLog.text()
         }
-        root.addView(card(
-            label("כלים", 18f, bold = true),
+        root.addView(card(false, listOf(
+            eyebrow("כלים"),
             certInfo,
             row(
-                button("⚙️  Android Auto", PURPLE, filled = false) { openAndroidAutoSettings() } to 1f,
-                button("📄  תעודה", ORANGE, filled = false) { askCertificate() } to 1f,
+                button("Android Auto", VIOLET) { openAndroidAutoSettings() } to 1f,
+                button("תעודה", AMBER) { askCertificate() } to 1f,
             ),
             row(
                 toggle to 1f,
-                button("📤  שתף יומן", SLATE, filled = false) {
+                button("שתף יומן", MUTED) {
                     val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, AppLog.text())
                     startActivity(Intent.createChooser(send, null))
                 } to 1f,
             ),
             log,
-        ))
+        )))
 
-
-        if (BuildConfig.RELAY_URL.isEmpty()) root.addView(label("שים לב: בבנייה הזו לא הוגדר שרת ממסר (RELAY_URL).", 14f, CORAL))
-        root.addView(label("גרסה ${BuildConfig.VERSION_NAME}", 12f, MUTED).apply {
+        if (BuildConfig.RELAY_URL.isEmpty()) {
+            root.addView(label("שים לב: בבנייה הזו לא הוגדר שרת ממסר (RELAY_URL).", 13f, CORAL).apply { setPadding(0, dp(10), 0, 0) })
+        }
+        root.addView(label("גרסה ${BuildConfig.VERSION_NAME}", 11.5f, DIM).apply {
             gravity = Gravity.CENTER
-            setPadding(0, dp(10), 0, 0)
+            setPadding(0, dp(12), 0, 0)
         })
 
         setContentView(ScrollView(this).apply {
             setBackgroundColor(BG)
             addView(root)
-            // Android 15 draws apps edge to edge; keep the content clear of the status and navigation bars.
             setOnApplyWindowInsetsListener { v, insets ->
                 val bars = insets.getInsets(WindowInsets.Type.systemBars())
                 v.setPadding(0, bars.top, 0, bars.bottom)
@@ -248,7 +316,6 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) wanted += Manifest.permission.POST_NOTIFICATIONS
-        // The microphone feeds Android Auto's voice assistant (the 🎤 button on the car screen).
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
             wanted += Manifest.permission.RECORD_AUDIO
         if (wanted.isNotEmpty()) requestPermissions(wanted.toTypedArray(), 1)
@@ -256,10 +323,6 @@ class MainActivity : Activity() {
         maybeAutoLoadCertificate()
     }
 
-    /**
-     * On first run, fetch the certificate from the link built into this APK (if any), so new
-     * users don't have to load it by hand. Runs once; after that the stored copy is used.
-     */
     private fun maybeAutoLoadCertificate() {
         val link = BuildConfig.CERT_URL
         if (link.isEmpty() || HuCert.isInstalled(this)) return
@@ -277,10 +340,6 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         ui.post(tick)
-        // One button: once the app is set up (certificate loaded, relay configured), opening it
-        // starts Android Auto by itself — the app icon is the only tap. We don't jump to Android
-        // Auto here the way ▶ does; if its head unit server isn't running yet, the status line asks
-        // for it. Done once per launch, and never after the user has pressed ■ (running stays off).
         if (!autoStarted && !AaService.running &&
             HuCert.isInstalled(this) && BuildConfig.RELAY_URL.isNotEmpty()
         ) {
@@ -294,18 +353,10 @@ class MainActivity : Activity() {
         ui.removeCallbacks(tick)
     }
 
-    /**
-     * Starts Android Auto mode. [openAaIfMissing] is true for the explicit ▶ button, which actively
-     * opens Android Auto when its head unit server isn't listening; the automatic start on app open
-     * passes false, so it never yanks the user away — the status line guides them instead.
-     */
     private fun startAndroidAuto(openAaIfMissing: Boolean = true) {
-        // Stop the old mirror mode in case an earlier version left it running.
         startService(Intent(this, CaptureService::class.java).setAction(CaptureService.ACTION_STOP))
         startForegroundService(Intent(this, AaService::class.java))
         if (!openAaIfMissing) return
-        // Android Auto offers no way for other apps to start its head unit server, so if it is
-        // not listening, take the user straight to the screen whose menu starts it.
         ui.postDelayed({
             if (AaService.serverMissing) {
                 Toast.makeText(this, "בתפריט שלוש הנקודות בחר Start head unit server, ואז חזור לכאן", Toast.LENGTH_LONG).show()
@@ -314,18 +365,11 @@ class MainActivity : Activity() {
         }, 1500)
     }
 
-    /**
-     * Local hotspot mode: the phone serves the stream directly over Wi-Fi, so it keeps working with
-     * no cellular. Starts (or stops) Android Auto mode together with the on-device server.
-     */
     private fun toggleLocal() {
         if (AaService.localActive) {
             startService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_OFF))
             return
         }
-        // Android gives no public API to switch the regular hotspot on, so if it's off we send the
-        // user to the hotspot settings (one toggle) rather than failing silently. Their own hotspot
-        // is better than an app one anyway — the Tesla already remembers its name and password.
         if (AaService.hotspotUrl() == null) {
             AlertDialog.Builder(this)
                 .setTitle("נקודה חמה כבויה")
@@ -338,15 +382,12 @@ class MainActivity : Activity() {
                 .show()
             return
         }
-        autoStarted = true // starting here shouldn't be doubled by the auto-start on the next resume
+        autoStarted = true
         startForegroundService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_ON))
         ui.postDelayed({ if (AaService.serverMissing) openAndroidAutoSettings() else showLocalInfo() }, 1500)
     }
 
     private fun openHotspotSettings() {
-        // The hotspot screen's intent/activity varies by OEM, so try the common ones in turn. The
-        // exported Settings$TetherSettingsActivity alias and the Samsung MobileApSettings activity
-        // land on the hotspot screen directly; the last two always resolve as a safe fallback.
         val candidates = listOf(
             Intent().setComponent(ComponentName("com.android.settings", "com.android.settings.Settings\$TetherSettingsActivity")),
             Intent().setComponent(ComponentName("com.samsung.android.settings", "com.samsung.android.settings.wifi.mobileap.MobileApSettings")),
@@ -367,7 +408,7 @@ class MainActivity : Activity() {
                 "2) בטסלה התחבר ל-WiFi של הטלפון.\n" +
                 "3) פתח בדפדפן הטסלה את הכתובת:\n\n$url"
         } else {
-            "הפעל קודם נקודה חמה (Hotspot) בטלפון. הכתובת לפתיחה בטסלה תופיע כאן ובכרטיס \"חיבור מקומי\"."
+            "הפעל קודם נקודה חמה (Hotspot) בטלפון. הכתובת לפתיחה בטסלה תופיע בכרטיס \"חיבור מקומי\"."
         }
         AlertDialog.Builder(this)
             .setTitle("חיבור מקומי")
@@ -410,11 +451,6 @@ class MainActivity : Activity() {
             .show()
     }
 
-    /**
-     * Downloads the head unit certificate from the user's own link (e.g. a Google Drive share).
-     * The link is kept only on this phone: the app and its repository are public, so it must not
-     * be built in.
-     */
     private fun askCertificate() {
         val prefs = getSharedPreferences("tesla_waze", MODE_PRIVATE)
         val clip = try {
@@ -461,8 +497,6 @@ class MainActivity : Activity() {
     }
 
     private fun openAndroidAutoSettings() {
-        // Android Auto has no launcher icon on Android 10+; its own settings screen (with the
-        // three-dot menu holding "Start head unit server") is found by its intent or activity name.
         val pkg = "com.google.android.projection.gearhead"
         val candidates = mutableListOf<Intent>()
         candidates += Intent(Intent.ACTION_APPLICATION_PREFERENCES).setPackage(pkg)
@@ -505,15 +539,17 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQ_CERT = 43
-        private const val BG = 0xFFF4F6FB.toInt()
-        private const val INK = 0xFF1E2235.toInt()
-        private const val MUTED = 0xFF6B7280.toInt()
-        private const val GREEN = 0xFF22C55E.toInt()
-        private const val CORAL = 0xFFFF6B6B.toInt()
-        private const val BLUE = 0xFF2F80ED.toInt()
-        private const val PURPLE = 0xFF8B5CF6.toInt()
-        private const val ORANGE = 0xFFF59E0B.toInt()
-        private const val SLATE = 0xFF475569.toInt()
-        private const val TEAL = 0xFF0EA5A5.toInt()
+        private const val BG = 0xFF0B0E14.toInt()
+        private const val CARD = 0xFF161B22.toInt()
+        private const val FLOAT = 0xFF1F242D.toInt()
+        private const val LINE = 0x1AFFFFFF
+        private const val INK = 0xFFF3F4F6.toInt()
+        private const val MUTED = 0xFF9CA3AF.toInt()
+        private const val DIM = 0xFF6B7280.toInt()
+        private const val MINT = 0xFF00F5D4.toInt()
+        private const val CYBER = 0xFF00BBF9.toInt()
+        private const val VIOLET = 0xFF9B5DE5.toInt()
+        private const val CORAL = 0xFFFF5C7A.toInt()
+        private const val AMBER = 0xFFFFC247.toInt()
     }
 }
