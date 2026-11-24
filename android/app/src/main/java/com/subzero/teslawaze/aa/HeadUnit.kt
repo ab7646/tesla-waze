@@ -44,6 +44,8 @@ class HeadUnit(
         fun onVideoFrame(ptsUs: Long, data: ByteArray)
         /** 16-bit PCM for the car. Return true if it was taken (sent to the car); false plays it on the phone. */
         fun onAudio(channel: Int, rate: Int, channels: Int, pcm: ByteArray, offset: Int): Boolean = false
+        /** Whether Android Auto should render the map in night (dark) colors right now. */
+        fun isNight(): Boolean = false
     }
 
     companion object {
@@ -140,6 +142,8 @@ class HeadUnit(
     @Volatile private var videoSession = 0
     @Volatile private var videoStarted = false
     @Volatile private var inputReady = false
+    @Volatile private var night = false
+    @Volatile private var nightSensorStarted = false
     @Volatile private var lastFocusToggle = 0L
     private var traced = 0
     /** For the caller's diagnosis: did we send service discovery, and did any channel open after it. */
@@ -439,10 +443,29 @@ class HeadUnit(
     private fun sendSensor(type: Int) {
         val event = when (type) {
             SENSOR_DRIVING_STATUS -> Pb().msg(13, Pb().varint(1, 0)) // unrestricted
-            SENSOR_NIGHT -> Pb().msg(10, Pb().bool(1, false))
+            SENSOR_NIGHT -> {
+                nightSensorStarted = true
+                night = try { listener.isNight() } catch (_: Exception) { false }
+                Pb().msg(10, Pb().bool(1, night))
+            }
             else -> return
         }
         send(CH_SENSOR, false, SENSOR_EVENT, event.toByteArray())
+    }
+
+    /**
+     * Pushes a day/night change to Android Auto so the map switches colors mid-drive (e.g. at
+     * sunset) to match the phone. Call it periodically; it sends only when the state actually flips.
+     */
+    fun refreshNight() {
+        if (!nightSensorStarted || !encrypted) return
+        val n = try { listener.isNight() } catch (_: Exception) { return }
+        if (n == night) return
+        night = n
+        try {
+            send(CH_SENSOR, false, SENSOR_EVENT, Pb().msg(10, Pb().bool(1, night)).toByteArray())
+            AppLog.add(if (night) "עובר למצב לילה" else "עובר למצב יום")
+        } catch (_: Exception) {}
     }
 
     private fun serviceDiscoveryResponse(): ByteArray {

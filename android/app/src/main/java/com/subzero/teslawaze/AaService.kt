@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.drawable.Icon
 import android.os.IBinder
 import com.subzero.teslawaze.aa.AudioEncoder
@@ -209,6 +210,16 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         return true
     }
 
+    /**
+     * Night mode follows the phone's current dark-theme state. Set the phone's dark theme to run
+     * from sunset to sunrise and the map darkens with it; refreshNight() (polled below) pushes the
+     * change to Android Auto when it flips during a drive.
+     */
+    override fun isNight(): Boolean {
+        val mode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        return mode == Configuration.UI_MODE_NIGHT_YES
+    }
+
     private fun sendAudio(channel: Int, rate: Int, channels: Int, ptsUs: Long, data: ByteArray) {
         val packet = ByteBuffer.allocate(13 + data.size)
             .put(4.toByte())
@@ -226,6 +237,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         var calm = 0
         while (running) {
             try { Thread.sleep(1000) } catch (_: InterruptedException) { return }
+            headUnit?.refreshNight() // follow day/night even while parked / between screens
             if (!screenPresent) continue
             val q = relay?.queued() ?: continue
             var next = bitRate
