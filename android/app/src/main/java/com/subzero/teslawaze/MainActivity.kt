@@ -19,6 +19,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.text.InputFilter
 import android.text.InputType
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
@@ -38,6 +39,7 @@ import com.subzero.teslawaze.aa.HuCert
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var statusDot: View
+    private lateinit var statusLine: TextView
     private lateinit var certInfo: TextView
     private lateinit var log: TextView
     private lateinit var localInfo: TextView
@@ -51,7 +53,14 @@ class MainActivity : Activity() {
     private val tick = object : Runnable {
         override fun run() {
             val running = AaService.running
-            status.text = AppLog.status.ifEmpty { "מוכן" }
+            status.text = when {
+                !running -> "מוכן"
+                AaService.serverMissing -> "ממתין להפעלת שרת"
+                AaService.fps > 0 -> if (AaService.localActive) "משדר · מקומי" else "משדר"
+                AaService.localActive -> "מקומי פעיל"
+                else -> "ממתין לרכב"
+            }
+            statusLine.text = AppLog.status.ifEmpty { "מוכן" }
             (statusDot.background as GradientDrawable).setColor(if (running) MINT else DIM)
             fpsNum.text = if (running) AaService.fps.toString() else "—"
             kbpsNum.text = if (running && AaService.kbps > 0) "%.1f".format(AaService.kbps / 1000f) else "—"
@@ -172,11 +181,10 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(14), dp(16), dp(18))
         }
 
-        // ---- header: brand + live status pill ----
+        // ---- header: compact brand only (status lives in the telemetry card) ----
         val mark = label("▶", 20f, MINT, bold = true).apply {
             gravity = Gravity.CENTER
             background = rounded(FLOAT, 12, 1, 0x4000F5D4)
-            layoutParams = LinearLayout.LayoutParams(dp(42), dp(42))
             setPadding(0, 0, 0, dp(2))
         }
         val brand = LinearLayout(this).apply {
@@ -184,28 +192,37 @@ class MainActivity : Activity() {
             addView(label("AA 2 TESLA", 20f, INK, bold = true).apply { letterSpacing = 0.02f })
             addView(label("Android Auto → Tesla", 12f, DIM))
         }
-        statusDot = View(this).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(DIM) }
-            layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(7) }
-        }
-        status = label("מוכן", 12.5f, MINT, bold = true)
-        val pill = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = rounded(0x1400F5D4, 50, 1, 0x3300F5D4)
-            setPadding(dp(12), dp(7), dp(12), dp(7))
-            addView(statusDot)
-            addView(status)
-        }
         root.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(mark, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(11) })
-            addView(brand, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            addView(pill)
+            addView(brand, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         })
 
         // ---- live telemetry ----
+        statusDot = View(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(DIM) }
+            layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(7) }
+        }
+        status = label("מוכן", 12.5f, MINT, bold = true).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        val statusChip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(0x1400F5D4, 50, 1, 0x3300F5D4)
+            setPadding(dp(11), dp(6), dp(11), dp(6))
+            addView(statusDot)
+            addView(status)
+        }
+        val telemetryHead = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(eyebrow("שידור חי"), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(statusChip)
+        }
+        statusLine = label("", 13f, MUTED).apply { setPadding(0, dp(8), 0, 0) }
         fpsNum = TextView(this).apply { text = "—" }
         kbpsNum = TextView(this).apply { text = "—" }
         spark = SparklineView(this).apply {
@@ -213,7 +230,8 @@ class MainActivity : Activity() {
                 .apply { topMargin = dp(10) }
         }
         root.addView(card(true, listOf(
-            eyebrow("שידור חי"),
+            telemetryHead,
+            statusLine,
             row(
                 metric(fpsNum, "fps", "קצב פריימים") to 1f,
                 metric(kbpsNum, "Mbps", "ביטרייט") to 1f,
