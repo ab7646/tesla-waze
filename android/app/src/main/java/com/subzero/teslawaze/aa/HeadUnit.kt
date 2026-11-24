@@ -323,7 +323,7 @@ class HeadUnit(
             AppLog.add("הפעלת המיקרופון נכשלה (${e.javaClass.simpleName})"); rec.release(); mic = null; return
         }
         AppLog.add("מיקרופון פתוח — העוזר הקולי מקשיב")
-        Thread {
+        Thread({
             val buf = ByteArray(1024) // ~32 ms of 16 kHz mono 16-bit; read() paces it to real time
             try {
                 while (mic === rec && running) {
