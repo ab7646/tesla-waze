@@ -35,6 +35,7 @@ class MainActivity : Activity() {
     private lateinit var certInfo: TextView
     private lateinit var log: TextView
     private val ui = Handler(Looper.getMainLooper())
+    private var autoStarted = false
     private val tick = object : Runnable {
         override fun run() {
             status.text = AppLog.status.ifEmpty { "מוכן" }
@@ -143,9 +144,11 @@ class MainActivity : Activity() {
         // ---- main action: start and stop side by side ----
         root.addView(card(
             label("אנדרואיד אוטו", 18f, bold = true),
+            label("נפתח אוטומטית בכל פתיחה של האפליקציה. \"התחל\" מפעיל ידנית וגם פותח את Android Auto אם צריך.", 12f, MUTED),
             row(
                 button("▶  התחל", GREEN, big = true) { startAndroidAuto() } to 2f,
                 button("■  עצור", CORAL, filled = false, big = true) {
+                    autoStarted = true // a manual stop shouldn't be undone by the auto-start on the next resume
                     startService(Intent(this, AaService::class.java).setAction(AaService.ACTION_STOP))
                 } to 1f,
             ),
@@ -250,6 +253,16 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         ui.post(tick)
+        // One button: once the app is set up (certificate loaded, relay configured), opening it
+        // starts Android Auto by itself — the app icon is the only tap. We don't jump to Android
+        // Auto here the way ▶ does; if its head unit server isn't running yet, the status line asks
+        // for it. Done once per launch, and never after the user has pressed ■ (running stays off).
+        if (!autoStarted && !AaService.running &&
+            HuCert.isInstalled(this) && BuildConfig.RELAY_URL.isNotEmpty()
+        ) {
+            autoStarted = true
+            startAndroidAuto(openAaIfMissing = false)
+        }
     }
 
     override fun onPause() {
@@ -257,10 +270,16 @@ class MainActivity : Activity() {
         ui.removeCallbacks(tick)
     }
 
-    private fun startAndroidAuto() {
+    /**
+     * Starts Android Auto mode. [openAaIfMissing] is true for the explicit ▶ button, which actively
+     * opens Android Auto when its head unit server isn't listening; the automatic start on app open
+     * passes false, so it never yanks the user away — the status line guides them instead.
+     */
+    private fun startAndroidAuto(openAaIfMissing: Boolean = true) {
         // Stop the old mirror mode in case an earlier version left it running.
         startService(Intent(this, CaptureService::class.java).setAction(CaptureService.ACTION_STOP))
         startForegroundService(Intent(this, AaService::class.java))
+        if (!openAaIfMissing) return
         // Android Auto offers no way for other apps to start its head unit server, so if it is
         // not listening, take the user straight to the screen whose menu starts it.
         // (The service's first connection attempt tells us; probing the port ourselves could
