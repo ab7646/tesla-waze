@@ -144,7 +144,7 @@ class MainActivity : Activity() {
         // ---- main action: start and stop side by side ----
         root.addView(card(
             label("אנדרואיד אוטו", 18f, bold = true),
-            label("נפתח אוטומטית בכל פתיחה של האפליקציה. עם האוטומציה (בכלים) גם \"Start head unit server\" נלחץ לבד.", 12f, MUTED),
+            label("נפתח אוטומטית בכל פתיחה של האפליקציה. \"התחל\" מפעיל ידנית וגם פותח את Android Auto אם צריך.", 12f, MUTED),
             row(
                 button("▶  התחל", GREEN, big = true) { startAndroidAuto() } to 2f,
                 button("■  עצור", CORAL, filled = false, big = true) {
@@ -199,7 +199,6 @@ class MainActivity : Activity() {
                     startActivity(Intent.createChooser(send, null))
                 } to 1f,
             ),
-            button("🤖  הפעלה אוטומטית של Start head unit server", PURPLE, filled = false) { enableAutomation() },
             log,
         ))
 
@@ -280,51 +279,15 @@ class MainActivity : Activity() {
         // Stop the old mirror mode in case an earlier version left it running.
         startService(Intent(this, CaptureService::class.java).setAction(CaptureService.ACTION_STOP))
         startForegroundService(Intent(this, AaService::class.java))
-        // Android Auto offers no way for other apps to start its head unit server. If the automation
-        // accessibility service is enabled it taps "Start head unit server" for us, so we open Android
-        // Auto even on the silent auto-start; otherwise only the explicit ▶ opens it, with a prompt.
+        if (!openAaIfMissing) return
+        // Android Auto offers no way for other apps to start its head unit server, so if it is
+        // not listening, take the user straight to the screen whose menu starts it.
         ui.postDelayed({
-            if (!AaService.serverMissing) return@postDelayed
-            val auto = HeadUnitStarter.running
-            if (auto) {
-                HeadUnitStarter.armed = true
-                // Stop trying after a while so it can't click something later by surprise.
-                ui.postDelayed({ HeadUnitStarter.armed = false }, 8000)
-            }
-            if (openAaIfMissing || auto) {
-                if (openAaIfMissing && !auto) {
-                    Toast.makeText(this, "בתפריט שלוש הנקודות בחר Start head unit server, ואז חזור לכאן", Toast.LENGTH_LONG).show()
-                }
+            if (AaService.serverMissing) {
+                Toast.makeText(this, "בתפריט שלוש הנקודות בחר Start head unit server, ואז חזור לכאן", Toast.LENGTH_LONG).show()
                 openAndroidAutoSettings()
             }
         }, 1500)
-    }
-
-    /**
-     * Offers to turn on the accessibility automation that taps "Start head unit server" in Android
-     * Auto. It can't be granted from here — the user flips it on in the Accessibility settings screen.
-     */
-    private fun enableAutomation() {
-        if (HeadUnitStarter.running) {
-            Toast.makeText(this, "האוטומציה כבר פעילה", Toast.LENGTH_SHORT).show()
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle("הפעלה אוטומטית של Android Auto")
-            .setMessage(
-                "כדי שהאפליקציה תלחץ לבד על \"Start head unit server\" ב-Android Auto, הפעל את שירות " +
-                    "הנגישות \"הפעלת Android Auto אוטומטית\" במסך שנפתח. הכול נשאר במכשיר, והשירות פועל " +
-                    "רק מול Android Auto.",
-            )
-            .setPositiveButton("פתח הגדרות נגישות") { _, _ ->
-                try {
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                } catch (_: Exception) {
-                    Toast.makeText(this, "לא נמצאו הגדרות נגישות", Toast.LENGTH_LONG).show()
-                }
-            }
-            .setNegativeButton("ביטול", null)
-            .show()
     }
 
     private fun askPairingCode() {
