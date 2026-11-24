@@ -222,6 +222,26 @@ class MainActivity : Activity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+
+        maybeAutoLoadCertificate()
+    }
+
+    /**
+     * On first run, fetch the certificate from the link built into this APK (if any), so new
+     * users don't have to load it by hand. Runs once; after that the stored copy is used.
+     */
+    private fun maybeAutoLoadCertificate() {
+        val link = BuildConfig.CERT_URL
+        if (link.isEmpty() || HuCert.isInstalled(this)) return
+        AppLog.add("מוריד תעודה…")
+        Thread {
+            val message = try {
+                "התעודה נטענה: ${HuCert.download(this, link)}"
+            } catch (e: Exception) {
+                "הורדת התעודה נכשלה: ${e.message}"
+            }
+            AppLog.add(message)
+        }.start()
     }
 
     override fun onResume() {
@@ -292,7 +312,7 @@ class MainActivity : Activity() {
         val input = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             hint = "https://drive.google.com/file/d/…"
-            setText(prefs.getString("cert_link", null) ?: clip ?: "")
+            setText(prefs.getString("cert_link", null) ?: BuildConfig.CERT_URL.ifEmpty { clip ?: "" })
             textDirection = View.TEXT_DIRECTION_LTR
         }
         AlertDialog.Builder(this)

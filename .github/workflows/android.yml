@@ -39,6 +39,7 @@ jobs:
         env:
           RELAY_URL: ${{ vars.RELAY_URL }}
           SCREEN_URL: ${{ vars.SCREEN_URL || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
+          CERT_URL: ${{ secrets.CERT_URL }}
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
           SIGNING_ALIAS: ${{ secrets.SIGNING_ALIAS }}
         run: |

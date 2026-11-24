@@ -6,6 +6,9 @@ plugins {
 // Values injected by the GitHub Actions build (see .github/workflows/android.yml).
 val relayUrl = System.getenv("RELAY_URL") ?: ""
 val screenUrl = System.getenv("SCREEN_URL") ?: ""
+// A link to the head unit certificate (e.g. a Google Drive share). It is passed as a build
+// SECRET, not a repo variable, because the file it points to contains the private key.
+val certUrl = System.getenv("CERT_URL") ?: ""
 val runNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
 val keystorePath = System.getenv("SIGNING_KEYSTORE")
 
@@ -21,6 +24,7 @@ android {
         versionName = "0.1.$runNumber"
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
         buildConfigField("String", "SCREEN_URL", "\"$screenUrl\"")
+        buildConfigField("String", "CERT_URL", "\"$certUrl\"")
     }
 
     // A stable signing key lets each new APK install as an update over the previous one.
