@@ -55,21 +55,23 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
          */
         fun hotspotUrl(): String? {
             return try {
-                var best: String? = null
                 for (nif in java.net.NetworkInterface.getNetworkInterfaces()) {
                     if (!nif.isUp || nif.isLoopback) continue
                     val name = nif.name.lowercase()
+                    // Match the tethering/AP interface, NOT the normal client Wi-Fi (wlan0). Hotspot
+                    // interfaces are named ap0 / swlan0 / softap… / wlan1 / rndis / usb, and on them
+                    // the phone is the gateway (address ends in .1, Android's default is 192.168.43.1).
+                    val apName = name.startsWith("ap") || name.contains("swlan") || name.contains("softap") ||
+                        name == "wlan1" || name.startsWith("rndis") || name.startsWith("usb")
                     for (addr in nif.inetAddresses) {
                         if (addr is java.net.Inet4Address && addr.isSiteLocalAddress) {
                             val ip = addr.hostAddress ?: continue
-                            val apLike = name.contains("ap") || name.contains("wlan") ||
-                                name.contains("swlan") || name.contains("softap")
-                            if (apLike) return "http://$ip:$LOCAL_PORT"
-                            if (ip.startsWith("192.168.")) best = ip
+                            val gateway = ip.startsWith("192.168.43.") || Regex("""^192\.168\.\d{1,3}\.1$""").matches(ip)
+                            if (apName || gateway) return "http://$ip:$LOCAL_PORT"
                         }
                     }
                 }
-                best?.let { "http://$it:$LOCAL_PORT" }
+                null
             } catch (e: Exception) {
                 null
             }

@@ -3,6 +3,7 @@ package com.subzero.teslawaze
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -343,12 +344,15 @@ class MainActivity : Activity() {
     }
 
     private fun openHotspotSettings() {
-        // The hotspot screen's intent/activity varies by OEM, so try the common ones in turn.
+        // The hotspot screen's intent/activity varies by OEM, so try the common ones in turn. The
+        // exported Settings$TetherSettingsActivity alias and the Samsung MobileApSettings activity
+        // land on the hotspot screen directly; the last two always resolve as a safe fallback.
         val candidates = listOf(
-            Intent(Intent.ACTION_MAIN).setClassName("com.android.settings", "com.android.settings.TetherSettings"),
+            Intent().setComponent(ComponentName("com.android.settings", "com.android.settings.Settings\$TetherSettingsActivity")),
+            Intent().setComponent(ComponentName("com.samsung.android.settings", "com.samsung.android.settings.wifi.mobileap.MobileApSettings")),
             Intent("android.settings.TETHER_SETTINGS"),
-            Intent("com.android.settings.WIFI_TETHER_SETTINGS"),
             Intent(Settings.ACTION_WIRELESS_SETTINGS),
+            Intent(Settings.ACTION_SETTINGS),
         )
         for (intent in candidates) {
             try { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return } catch (_: Exception) {}
