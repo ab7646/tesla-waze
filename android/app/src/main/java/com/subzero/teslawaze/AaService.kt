@@ -52,6 +52,8 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             private set
         @Volatile var kbps = 0
             private set
+        /** Day/night mode pushed to Android Auto: 0 = follow phone theme, 1 = force day, 2 = force night. */
+        @Volatile var nightMode = 0
 
         /**
          * The phone's own address on its Wi-Fi hotspot (the Tesla's gateway), as a URL to open in
@@ -273,11 +275,15 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     }
 
     /**
-     * Night mode follows the phone's current dark-theme state. Set the phone's dark theme to run
-     * from sunset to sunrise and the map darkens with it; refreshNight() (polled below) pushes the
-     * change to Android Auto when it flips during a drive.
+     * Night mode: a manual override (nightMode 1/2 = force day/night) wins, otherwise it follows the
+     * phone's current dark-theme state. refreshNight() (polled every second) pushes a change to
+     * Android Auto within ~1s, so flipping the in-app toggle re-colours Waze's map on the next tick.
      */
     override fun isNight(): Boolean {
+        when (nightMode) {
+            1 -> return false
+            2 -> return true
+        }
         val mode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         return mode == Configuration.UI_MODE_NIGHT_YES
     }

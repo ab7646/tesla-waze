@@ -44,6 +44,7 @@ class MainActivity : Activity() {
     private lateinit var log: TextView
     private lateinit var localInfo: TextView
     private lateinit var localBtn: Button
+    private lateinit var dayNightBtn: Button
     private lateinit var fpsNum: TextView
     private lateinit var kbpsNum: TextView
     private lateinit var spark: SparklineView
@@ -74,6 +75,11 @@ class MainActivity : Activity() {
             } else {
                 localBtn.text = "הפעל חיבור מקומי"
                 localInfo.text = if (hotspot != null) "נקודה חמה פעילה ✓" else "מצריך נקודה חמה פעילה"
+            }
+            dayNightBtn.text = when (AaService.nightMode) {
+                1 -> "תצוגה: יום ☀"
+                2 -> "תצוגה: לילה ☾"
+                else -> "תצוגה: אוטומטי"
             }
             ui.postDelayed(this, 500)
         }
@@ -253,7 +259,7 @@ class MainActivity : Activity() {
         )))
 
         // ---- local hotspot ----
-        localInfo = label("", 12.5f, MINT, bold = true).apply {
+        localInfo = label("", 15f, MINT, bold = true).apply {
             setTextIsSelectable(true)
             textDirection = View.TEXT_DIRECTION_LTR
         }
@@ -262,6 +268,21 @@ class MainActivity : Activity() {
             eyebrow("חיבור מקומי · ללא אינטרנט"),
             localInfo,
             localBtn,
+        )))
+
+        // ---- map day/night (overrides what Waze shows on the Tesla) ----
+        dayNightBtn = button("תצוגה: אוטומטי", VIOLET) {
+            AaService.nightMode = (AaService.nightMode + 1) % 3
+            dayNightBtn.text = when (AaService.nightMode) {
+                1 -> "תצוגה: יום ☀"
+                2 -> "תצוגה: לילה ☾"
+                else -> "תצוגה: אוטומטי"
+            }
+        }
+        root.addView(card(false, listOf(
+            eyebrow("תצוגת מפה · יום / לילה"),
+            label("Waze עוקב אחרי המצב הזה. \"אוטומטי\" הולך לפי ערכת הנושא של הטלפון; בחר יום כדי לכפות תצוגה בהירה.", 13f, MUTED),
+            dayNightBtn,
         )))
 
         // ---- pairing ----
@@ -390,9 +411,12 @@ class MainActivity : Activity() {
         }
         if (AaService.hotspotUrl() == null) {
             AlertDialog.Builder(this)
-                .setTitle("נקודה חמה כבויה")
+                .setTitle("לא זוהתה נקודה חמה משדרת")
                 .setMessage(
-                    "כדי לחבר את הטסלה ישירות צריך נקודה חמה (Hotspot) פעילה בטלפון. אפתח את ההגדרות; " +
+                    "המתג בטלפון אולי דלוק, אבל הרשת לא משדרת בפועל (לא נמצא ממשק AP פעיל). " +
+                        "אפתח את ההגדרות — ודא:\n\n" +
+                        "• רצועה (Band): 2.4GHz בלבד — הטסלה לרוב לא רואה 5GHz.\n" +
+                        "• כבה \"כיבוי אוטומטי\" של הנקודה החמה.\n\n" +
                         "אחרי שתפעיל, חזור ולחץ שוב על \"הפעל חיבור מקומי\".",
                 )
                 .setPositiveButton("פתח הגדרות נקודה חמה") { _, _ -> openHotspotSettings() }
@@ -422,9 +446,10 @@ class MainActivity : Activity() {
     private fun showLocalInfo() {
         val url = AaService.hotspotUrl() ?: AaService.localUrl
         val msg = if (url != null) {
-            "1) ודא שנקודה חמה (Hotspot) פעילה בטלפון.\n" +
-                "2) בטסלה התחבר ל-WiFi של הטלפון.\n" +
-                "3) פתח בדפדפן הטסלה את הכתובת:\n\n$url"
+            "הנקודה החמה משדרת ✓\n\n" +
+                "1) בטסלה: הגדרות ← WiFi, התחבר לרשת של הטלפון.\n" +
+                "   (לא רואה אותה? הגדר בטלפון רצועה 2.4GHz וכבה כיבוי אוטומטי.)\n" +
+                "2) בדפדפן הטסלה פתח את הכתובת:\n\n$url"
         } else {
             "הפעל קודם נקודה חמה (Hotspot) בטלפון. הכתובת לפתיחה בטסלה תופיע בכרטיס \"חיבור מקומי\"."
         }
