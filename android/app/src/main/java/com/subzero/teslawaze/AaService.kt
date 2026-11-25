@@ -11,7 +11,11 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.drawable.Icon
+import android.net.wifi.WifiManager
+import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import com.subzero.teslawaze.aa.AudioEncoder
 import com.subzero.teslawaze.aa.HeadUnit
 import com.subzero.teslawaze.aa.HuCert
@@ -54,6 +58,10 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             private set
         /** Day/night mode pushed to Android Auto: 0 = follow phone theme, 1 = force day, 2 = force night. */
         @Volatile var nightMode = 0
+        /** Local-Only Hotspot the app itself opens (private AP the Tesla can actually reach). */
+        @Volatile var lohsSsid: String? = null
+        @Volatile var lohsPass: String? = null
+        @Volatile var lohsError: String? = null
 
         /**
          * The phone's own address on its Wi-Fi hotspot (the Tesla's gateway), as a URL to open in
@@ -125,6 +133,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     @Volatile private var localServer: LocalServer? = null
     @Volatile private var relayPresent = false
     @Volatile private var localPresent = false
+    private var lohsReservation: WifiManager.LocalOnlyHotspotReservation? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -365,27 +374,95 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     // ---- local hotspot server (direct Tesla <-> phone over Wi-Fi, no internet) ----
 
     private fun startLocal() {
-        if (localServer != null) { if (localUrl == null) localUrl = hotspotUrl(); return }
+        if (localServer == null) {
+            try {
+                val srv = LocalServer(applicationContext, LOCAL_PORT, ::onLocalScreens, ::onControl)
+                srv.start(0, false) // 0 = no socket read timeout, so a quiet WebSocket stays open
+                localServer = srv
+                localActive = true
+                AppLog.add("שרת מקומי פעיל")
+            } catch (e: Exception) {
+                AppLog.add("הפעלת שרת מקומי נכשלה: ${e.javaClass.simpleName}: ${e.message}")
+                return
+            }
+        }
+        startLohs()
+        localUrl = hotspotUrl()
+    }
+
+    /**
+     * Opens the app's own Local-Only Hotspot: a private, system-managed Wi-Fi AP (192.168.49.x, the
+     * phone is the gateway) with no carrier involvement and no client isolation, so the Tesla can
+     * actually reach the on-device server — unlike the managed Settings hotspot. Android returns a
+     * random SSID + passphrase, which the UI shows for the user to enter in the car.
+     */
+    private fun startLohs() {
+        if (lohsReservation != null) return
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            lohsError = "חסרה הרשאת מיקום — אשר אותה לאפליקציה"
+            AppLog.add(lohsError!!)
+            return
+        }
+        val wifi = getSystemService(WifiManager::class.java) ?: run {
+            lohsError = "Wi-Fi לא זמין"; return
+        }
+        lohsError = null
         try {
-            val srv = LocalServer(applicationContext, LOCAL_PORT, ::onLocalScreens, ::onControl)
-            srv.start(0, false) // 0 = no socket read timeout, so a quiet WebSocket stays open
-            localServer = srv
-            localActive = true
-            localUrl = hotspotUrl()
-            AppLog.add("שרת מקומי פעיל" + (localUrl?.let { " · $it" } ?: " (הפעל נקודה חמה כדי לקבל כתובת)"))
+            wifi.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
+                override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation) {
+                    lohsReservation = reservation
+                    val cfg = reservation.softApConfiguration
+                    // getSsid() is deprecated (and may return null) on API 33+, so prefer getWifiSsid().
+                    val ssid = if (Build.VERSION.SDK_INT >= 33) {
+                        cfg.wifiSsid?.toString()?.trim('"')
+                    } else {
+                        @Suppress("DEPRECATION") cfg.ssid
+                    }
+                    lohsSsid = ssid
+                    lohsPass = cfg.passphrase
+                    lohsError = null
+                    localUrl = hotspotUrl()
+                    AppLog.add("נקודה חמה מקומית פעילה · רשת: $lohsSsid")
+                }
+
+                override fun onStopped() {
+                    lohsReservation = null
+                    lohsSsid = null
+                    lohsPass = null
+                    AppLog.add("נקודה חמה מקומית נעצרה")
+                }
+
+                override fun onFailed(reason: Int) {
+                    lohsReservation = null
+                    val hint = when (reason) {
+                        3 -> " — כבה קודם את ההוטספוט הרגיל"            // ERROR_INCOMPATIBLE_MODE
+                        4 -> " — חסום ע\"י הטלפון (מדיניות מעסיק)"      // ERROR_TETHERING_DISALLOWED
+                        1 -> " — אין ערוץ פנוי, ודא ש-Wi-Fi דלוק"      // ERROR_NO_CHANNEL
+                        else -> ""
+                    }
+                    lohsError = "פתיחת נקודה חמה מקומית נכשלה (קוד $reason)$hint"
+                    AppLog.add(lohsError!!)
+                }
+            }, Handler(Looper.getMainLooper()))
         } catch (e: Exception) {
-            AppLog.add("הפעלת שרת מקומי נכשלה: ${e.javaClass.simpleName}: ${e.message}")
+            lohsError = "שגיאה בפתיחת נקודה חמה מקומית: ${e.message}"
+            AppLog.add(lohsError!!)
         }
     }
 
     private fun stopLocal() {
         localServer?.let { try { it.stop() } catch (_: Exception) {} }
         localServer = null
+        lohsReservation?.let { try { it.close() } catch (_: Exception) {} }
+        lohsReservation = null
+        lohsSsid = null
+        lohsPass = null
+        lohsError = null
         localActive = false
         localUrl = null
         localPresent = false
         updateScreen()
-        AppLog.add("שרת מקומי כבוי")
+        AppLog.add("חיבור מקומי כבוי")
     }
 
     private fun sendPcmLocal(channel: Int, rate: Int, channels: Int, pcm: ByteArray, offset: Int) {

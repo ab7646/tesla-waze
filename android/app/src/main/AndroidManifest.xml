@@ -9,6 +9,11 @@
     <!-- Voice: capture the phone mic and feed it to Android Auto's assistant. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Local-Only Hotspot: the app opens its own private Wi-Fi AP the Tesla can reach. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
 
     <!-- Needed to see Android Auto's activities (package visibility, Android 11+). -->
     <queries>

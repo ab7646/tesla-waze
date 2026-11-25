@@ -3,7 +3,6 @@ package com.subzero.teslawaze
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -11,6 +10,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.content.res.ColorStateList
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -68,13 +68,17 @@ class MainActivity : Activity() {
             spark.push(if (running) AaService.fps.toFloat() else 0f)
             if (log.visibility == View.VISIBLE) log.text = AppLog.text()
             certInfo.text = HuCert.describe(this@MainActivity)?.let { "תעודה טעונה ✓" } ?: "לא נטענה תעודה"
-            val hotspot = AaService.hotspotUrl()
             if (AaService.localActive) {
                 localBtn.text = "כבה חיבור מקומי"
-                localInfo.text = hotspot?.let { "פתח בטסלה:  $it" } ?: "נקודה חמה כבויה — הפעל אותה בטלפון"
+                val ssid = AaService.lohsSsid
+                localInfo.text = when {
+                    ssid != null -> "רשת:  $ssid\nסיסמה:  ${AaService.lohsPass}\n${AaService.hotspotUrl() ?: "http://192.168.49.1:8080"}"
+                    AaService.lohsError != null -> AaService.lohsError
+                    else -> "פותח נקודה חמה מקומית…"
+                }
             } else {
                 localBtn.text = "הפעל חיבור מקומי"
-                localInfo.text = if (hotspot != null) "נקודה חמה פעילה ✓" else "מצריך נקודה חמה פעילה"
+                localInfo.text = "פותח נקודה חמה פרטית שהטסלה תוכל להגיע אליה"
             }
             dayNightBtn.text = when (AaService.nightMode) {
                 1 -> "תצוגה: יום ☀"
@@ -268,7 +272,7 @@ class MainActivity : Activity() {
         root.addView(card(false, listOf(
             eyebrow("חיבור מקומי · ללא אינטרנט"),
             localInfo,
-            label("הקש על הכתובת לרשימת כל הכתובות לניסיון", 11.5f, DIM),
+            label("הקש על הפרטים לשם הרשת, הסיסמה והכתובת לטסלה", 11.5f, DIM),
             localBtn,
         )))
 
@@ -411,59 +415,55 @@ class MainActivity : Activity() {
             startService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_OFF))
             return
         }
-        if (AaService.hotspotUrl() == null) {
+        // The app opens its OWN private hotspot (Local-Only Hotspot), which Android gates on location.
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "אשר הרשאת מיקום כדי לפתוח נקודה חמה מקומית, ואז לחץ שוב", Toast.LENGTH_LONG).show()
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 2)
+            return
+        }
+        if (!isLocationOn()) {
             AlertDialog.Builder(this)
-                .setTitle("לא זוהתה נקודה חמה משדרת")
-                .setMessage(
-                    "המתג בטלפון אולי דלוק, אבל הרשת לא משדרת בפועל (לא נמצא ממשק AP פעיל). " +
-                        "אפתח את ההגדרות — ודא:\n\n" +
-                        "• רצועה (Band): 2.4GHz בלבד — הטסלה לרוב לא רואה 5GHz.\n" +
-                        "• כבה \"כיבוי אוטומטי\" של הנקודה החמה.\n\n" +
-                        "אחרי שתפעיל, חזור ולחץ שוב על \"הפעל חיבור מקומי\".",
-                )
-                .setPositiveButton("פתח הגדרות נקודה חמה") { _, _ -> openHotspotSettings() }
+                .setTitle("הדלק מיקום")
+                .setMessage("כדי לפתוח נקודה חמה מקומית צריך ששירותי המיקום (GPS) יהיו דלוקים.")
+                .setPositiveButton("פתח הגדרות מיקום") { _, _ ->
+                    try { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) } catch (_: Exception) {}
+                }
                 .setNegativeButton("ביטול", null)
                 .show()
             return
         }
         autoStarted = true
         startForegroundService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_ON))
-        ui.postDelayed({ if (AaService.serverMissing) openAndroidAutoSettings() else showLocalInfo() }, 1500)
+        ui.postDelayed({ if (AaService.serverMissing) openAndroidAutoSettings() else showLocalInfo() }, 2500)
     }
 
-    private fun openHotspotSettings() {
-        val candidates = listOf(
-            Intent().setComponent(ComponentName("com.android.settings", "com.android.settings.Settings\$TetherSettingsActivity")),
-            Intent().setComponent(ComponentName("com.samsung.android.settings", "com.samsung.android.settings.wifi.mobileap.MobileApSettings")),
-            Intent("android.settings.TETHER_SETTINGS"),
-            Intent(Settings.ACTION_WIRELESS_SETTINGS),
-            Intent(Settings.ACTION_SETTINGS),
-        )
-        for (intent in candidates) {
-            try { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return } catch (_: Exception) {}
-        }
-        Toast.makeText(this, "פתח ידנית: הגדרות ← נקודה חמה / שיתוף אינטרנט", Toast.LENGTH_LONG).show()
-    }
+    private fun isLocationOn(): Boolean = try {
+        getSystemService(LocationManager::class.java)?.isLocationEnabled == true
+    } catch (_: Exception) { true }
 
     private fun showLocalInfo() {
-        val url = AaService.hotspotUrl() ?: AaService.localUrl
-        val cands = AaService.localCandidates()
-        val msg = if (url != null) {
-            "הנקודה החמה משדרת ✓\n\n" +
-                "1) בטסלה: הגדרות ← WiFi, התחבר לרשת של הטלפון.\n" +
-                "2) בדפדפן הטסלה פתח את הכתובת:\n\n$url\n\n" +
-                "אם מקבלים \"ERR_CONNECTION_REFUSED\", זו כנראה הכתובת הלא-נכונה. נסה את האחרות:\n\n" +
-                cands.joinToString("\n")
-        } else {
-            "לא זוהתה כתובת נקודה חמה. אלה כל הכתובות של הטלפון כרגע — נסה כל אחת בדפדפן הטסלה:\n\n" +
-                (if (cands.isEmpty()) "(אין)" else cands.joinToString("\n"))
+        val ssid = AaService.lohsSsid
+        val pass = AaService.lohsPass
+        val url = AaService.hotspotUrl() ?: AaService.localUrl ?: "http://192.168.49.1:8080"
+        val err = AaService.lohsError
+        val msg = when {
+            ssid != null ->
+                "נקודה חמה מקומית פעילה ✓\n\n" +
+                    "1) בטסלה ← הגדרות ← WiFi, התחבר ל:\n" +
+                    "     רשת:  $ssid\n" +
+                    "     סיסמה:  $pass\n\n" +
+                    "2) בדפדפן הטסלה פתח:\n$url"
+            err != null ->
+                "לא ניתן לפתוח נקודה חמה מקומית:\n$err\n\n" +
+                    "נסה לכבות את ההוטספוט הרגיל ולהדליק מיקום. אם זה חסום ע\"י המעסיק — מצב מקומי לא יתאפשר בטלפון הזה, ונצטרך להישאר עם הממסר דרך האינטרנט."
+            else -> "פותח נקודה חמה מקומית… המתן כמה שניות ולחץ שוב על הכתובת לרענון."
         }
         AlertDialog.Builder(this)
             .setTitle("חיבור מקומי")
             .setMessage(msg)
             .setPositiveButton("סגור", null)
             .apply {
-                if (cands.isNotEmpty()) setNeutralButton("שתף כתובות") { _, _ ->
+                setNeutralButton("שתף פרטים") { _, _ ->
                     val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, msg)
                     startActivity(Intent.createChooser(send, null))
                 }
@@ -570,6 +570,12 @@ class MainActivity : Activity() {
     }
 
     @Deprecated("Activity result API is not used to keep the app dependency-free")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // Location was requested for the Local-Only Hotspot; if granted, start local mode now.
+        if (requestCode == 2 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) toggleLocal()
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
