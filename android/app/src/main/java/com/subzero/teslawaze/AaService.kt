@@ -33,6 +33,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     companion object {
         const val ACTION_STOP = "com.subzero.teslawaze.AA_STOP"
         const val ACTION_LOCAL_ON = "com.subzero.teslawaze.LOCAL_ON"
+        const val ACTION_LOHS_ON = "com.subzero.teslawaze.LOHS_ON"
         const val ACTION_LOCAL_OFF = "com.subzero.teslawaze.LOCAL_OFF"
         const val LOCAL_PORT = 8080
         private const val CHANNEL = "android_auto"
@@ -142,9 +143,10 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
             ACTION_LOCAL_OFF -> { stopLocal(); return START_NOT_STICKY }
         }
-        val wantLocal = intent?.action == ACTION_LOCAL_ON
+        val wantLocal = intent?.action == ACTION_LOCAL_ON || intent?.action == ACTION_LOHS_ON
+        val wantLohs = intent?.action == ACTION_LOHS_ON
         if (running) {
-            if (wantLocal) startLocal()
+            if (wantLocal) startLocal(wantLohs)
             return START_NOT_STICKY
         }
         // Claim the microphone foreground-service type only when the user granted RECORD_AUDIO,
@@ -162,7 +164,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         relay = RelayClient(url, this).also { it.connect() }
         worker = Thread({ loop() }, "android-auto").also { it.start() }
         AppLog.status = "מצב אנדרואיד אוטו פעיל"
-        if (wantLocal) startLocal()
+        if (wantLocal) startLocal(wantLohs)
         return START_NOT_STICKY
     }
 
@@ -373,7 +375,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
 
     // ---- local hotspot server (direct Tesla <-> phone over Wi-Fi, no internet) ----
 
-    private fun startLocal() {
+    private fun startLocal(withLohs: Boolean) {
         if (localServer == null) {
             try {
                 val srv = LocalServer(applicationContext, LOCAL_PORT, ::onLocalScreens, ::onControl)
@@ -386,7 +388,9 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
                 return
             }
         }
-        startLohs()
+        // withLohs: open the app's own private AP. Otherwise just run the server and rely on whatever
+        // Wi-Fi the phone is already joined to (e.g. a personal phone's hotspot) to carry the traffic.
+        if (withLohs) startLohs()
         localUrl = hotspotUrl()
     }
 

@@ -71,14 +71,16 @@ class MainActivity : Activity() {
             if (AaService.localActive) {
                 localBtn.text = "כבה חיבור מקומי"
                 val ssid = AaService.lohsSsid
+                val url = AaService.hotspotUrl()
                 localInfo.text = when {
-                    ssid != null -> "רשת:  $ssid\nסיסמה:  ${AaService.lohsPass}\n${AaService.hotspotUrl() ?: "http://192.168.49.1:8080"}"
+                    ssid != null -> "רשת:  $ssid\nסיסמה:  ${AaService.lohsPass}\n${url ?: "http://192.168.49.1:8080"}"
+                    url != null -> "כתובת לטסלה:\n$url"
                     AaService.lohsError != null -> AaService.lohsError
-                    else -> "פותח נקודה חמה מקומית…"
+                    else -> "ממתין לכתובת… ודא שהטלפון מחובר ל-Wi-Fi"
                 }
             } else {
                 localBtn.text = "הפעל חיבור מקומי"
-                localInfo.text = "פותח נקודה חמה פרטית שהטסלה תוכל להגיע אליה"
+                localInfo.text = "מריץ שרת על הרשת שהטלפון מחובר אליה"
             }
             dayNightBtn.text = when (AaService.nightMode) {
                 1 -> "תצוגה: יום ☀"
@@ -272,8 +274,9 @@ class MainActivity : Activity() {
         root.addView(card(false, listOf(
             eyebrow("חיבור מקומי · ללא אינטרנט"),
             localInfo,
-            label("הקש על הפרטים לשם הרשת, הסיסמה והכתובת לטסלה", 11.5f, DIM),
+            label("השרת רץ על הרשת שהטלפון מחובר אליה. חבר את הטסלה לאותה רשת (למשל הוטספוט של טלפון אישי) ופתח את הכתובת. הקש על הפרטים לצעדים.", 11.5f, DIM),
             localBtn,
+            button("פתח נקודה חמה של האפליקציה", CYBER) { startAppHotspot() },
         )))
 
         // ---- map day/night (overrides what Waze shows on the Tesla) ----
@@ -410,29 +413,37 @@ class MainActivity : Activity() {
         }, 1500)
     }
 
+    /** Server-only local mode: runs the on-device server and relies on whatever Wi-Fi the phone is
+     *  already joined to (e.g. a personal phone's hotspot) to carry the stream to the Tesla. */
     private fun toggleLocal() {
         if (AaService.localActive) {
             startService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_OFF))
             return
         }
-        // The app opens its OWN private hotspot (Local-Only Hotspot). Android 13+ gates this on the
-        // NEARBY_WIFI_DEVICES permission; older versions on fine location + location services on.
+        autoStarted = true
+        startForegroundService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_ON))
+        ui.postDelayed({ if (AaService.serverMissing) openAndroidAutoSettings() else showLocalInfo() }, 1500)
+    }
+
+    /** The app opens its OWN private hotspot (Local-Only Hotspot). Android 13+ gates this on the
+     *  NEARBY_WIFI_DEVICES permission; older versions on fine location + location services on. */
+    private fun startAppHotspot() {
         if (Build.VERSION.SDK_INT >= 33) {
             if (checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "אשר הרשאת \"מכשירים סמוכים\" כדי לפתוח נקודה חמה מקומית, ואז לחץ שוב", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "אשר הרשאת \"מכשירים סמוכים\" כדי לפתוח נקודה חמה, ואז לחץ שוב", Toast.LENGTH_LONG).show()
                 requestPermissions(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES), 2)
                 return
             }
         } else {
             if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "אשר הרשאת מיקום כדי לפתוח נקודה חמה מקומית, ואז לחץ שוב", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "אשר הרשאת מיקום כדי לפתוח נקודה חמה, ואז לחץ שוב", Toast.LENGTH_LONG).show()
                 requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 2)
                 return
             }
             if (!isLocationOn()) {
                 AlertDialog.Builder(this)
                     .setTitle("הדלק מיקום")
-                    .setMessage("כדי לפתוח נקודה חמה מקומית צריך ששירותי המיקום (GPS) יהיו דלוקים.")
+                    .setMessage("כדי לפתוח נקודה חמה צריך ששירותי המיקום (GPS) יהיו דלוקים.")
                     .setPositiveButton("פתח הגדרות מיקום") { _, _ ->
                         try { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) } catch (_: Exception) {}
                     }
@@ -442,7 +453,7 @@ class MainActivity : Activity() {
             }
         }
         autoStarted = true
-        startForegroundService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_ON))
+        startForegroundService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOHS_ON))
         ui.postDelayed({ if (AaService.serverMissing) openAndroidAutoSettings() else showLocalInfo() }, 2500)
     }
 
@@ -453,29 +464,32 @@ class MainActivity : Activity() {
     private fun showLocalInfo() {
         val ssid = AaService.lohsSsid
         val pass = AaService.lohsPass
-        val url = AaService.hotspotUrl() ?: AaService.localUrl ?: "http://192.168.49.1:8080"
+        val url = AaService.hotspotUrl() ?: AaService.localUrl
         val err = AaService.lohsError
+        val cands = AaService.localCandidates()
+        val extra = if (cands.size > 1) "\n\nכתובות נוספות לניסיון:\n" + cands.joinToString("\n") else ""
         val msg = when {
             ssid != null ->
-                "נקודה חמה מקומית פעילה ✓\n\n" +
-                    "1) בטסלה ← הגדרות ← WiFi, התחבר ל:\n" +
-                    "     רשת:  $ssid\n" +
-                    "     סיסמה:  $pass\n\n" +
-                    "2) בדפדפן הטסלה פתח:\n$url"
+                "נקודה חמה של האפליקציה פעילה ✓\n\n" +
+                    "1) בטסלה ← WiFi, התחבר ל:\n     רשת:  $ssid\n     סיסמה:  $pass\n\n" +
+                    "2) בדפדפן הטסלה פתח:\n${url ?: "http://192.168.49.1:8080"}\n\n" +
+                    "(אם הטסלה כותבת \"אין אינטרנט\" ומסרבת — זו מגבלת טסלה לרשת ללא אינטרנט.)"
+            url != null ->
+                "חיבור מקומי פעיל ✓\n\n" +
+                    "ודא שהטלפון והטסלה מחוברים לאותה רשת Wi-Fi (למשל הוטספוט של טלפון אישי), ואז פתח בדפדפן הטסלה:\n\n$url" + extra
             err != null ->
-                "לא ניתן לפתוח נקודה חמה מקומית:\n$err\n\n" +
-                    "נסה לכבות את ההוטספוט הרגיל ולהדליק מיקום. אם זה חסום ע\"י המעסיק — מצב מקומי לא יתאפשר בטלפון הזה, ונצטרך להישאר עם הממסר דרך האינטרנט."
-            else -> "פותח נקודה חמה מקומית… המתן כמה שניות ולחץ שוב על הכתובת לרענון."
+                "לא ניתן לפתוח נקודה חמה של האפליקציה:\n$err"
+            else ->
+                "השרת פעיל, אבל לא נמצאה כתובת רשת. חבר את הטלפון ל-Wi-Fi (למשל הוטספוט של טלפון אישי) ונסה שוב." +
+                    (if (cands.isEmpty()) "" else "\n\nכתובות:\n" + cands.joinToString("\n"))
         }
         AlertDialog.Builder(this)
             .setTitle("חיבור מקומי")
             .setMessage(msg)
             .setPositiveButton("סגור", null)
-            .apply {
-                setNeutralButton("שתף פרטים") { _, _ ->
-                    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, msg)
-                    startActivity(Intent.createChooser(send, null))
-                }
+            .setNeutralButton("שתף פרטים") { _, _ ->
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, msg)
+                startActivity(Intent.createChooser(send, null))
             }
             .show()
     }
@@ -582,7 +596,7 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         // Location was requested for the Local-Only Hotspot; if granted, start local mode now.
-        if (requestCode == 2 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) toggleLocal()
+        if (requestCode == 2 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startAppHotspot()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
