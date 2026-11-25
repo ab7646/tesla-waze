@@ -398,8 +398,11 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
      */
     private fun startLohs() {
         if (lohsReservation != null) return
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            lohsError = "חסרה הרשאת מיקום — אשר אותה לאפליקציה"
+        // API 33+ gates Local-Only Hotspot on NEARBY_WIFI_DEVICES; older versions on fine location.
+        val needed = if (Build.VERSION.SDK_INT >= 33)
+            Manifest.permission.NEARBY_WIFI_DEVICES else Manifest.permission.ACCESS_FINE_LOCATION
+        if (checkSelfPermission(needed) != PackageManager.PERMISSION_GRANTED) {
+            lohsError = "חסרה הרשאה (${if (Build.VERSION.SDK_INT >= 33) "מכשירים סמוכים" else "מיקום"}) — אשר אותה לאפליקציה"
             AppLog.add(lohsError!!)
             return
         }

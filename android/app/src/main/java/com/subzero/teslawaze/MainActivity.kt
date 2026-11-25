@@ -415,22 +415,31 @@ class MainActivity : Activity() {
             startService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_OFF))
             return
         }
-        // The app opens its OWN private hotspot (Local-Only Hotspot), which Android gates on location.
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, "אשר הרשאת מיקום כדי לפתוח נקודה חמה מקומית, ואז לחץ שוב", Toast.LENGTH_LONG).show()
-            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 2)
-            return
-        }
-        if (!isLocationOn()) {
-            AlertDialog.Builder(this)
-                .setTitle("הדלק מיקום")
-                .setMessage("כדי לפתוח נקודה חמה מקומית צריך ששירותי המיקום (GPS) יהיו דלוקים.")
-                .setPositiveButton("פתח הגדרות מיקום") { _, _ ->
-                    try { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) } catch (_: Exception) {}
-                }
-                .setNegativeButton("ביטול", null)
-                .show()
-            return
+        // The app opens its OWN private hotspot (Local-Only Hotspot). Android 13+ gates this on the
+        // NEARBY_WIFI_DEVICES permission; older versions on fine location + location services on.
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "אשר הרשאת \"מכשירים סמוכים\" כדי לפתוח נקודה חמה מקומית, ואז לחץ שוב", Toast.LENGTH_LONG).show()
+                requestPermissions(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES), 2)
+                return
+            }
+        } else {
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "אשר הרשאת מיקום כדי לפתוח נקודה חמה מקומית, ואז לחץ שוב", Toast.LENGTH_LONG).show()
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 2)
+                return
+            }
+            if (!isLocationOn()) {
+                AlertDialog.Builder(this)
+                    .setTitle("הדלק מיקום")
+                    .setMessage("כדי לפתוח נקודה חמה מקומית צריך ששירותי המיקום (GPS) יהיו דלוקים.")
+                    .setPositiveButton("פתח הגדרות מיקום") { _, _ ->
+                        try { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) } catch (_: Exception) {}
+                    }
+                    .setNegativeButton("ביטול", null)
+                    .show()
+                return
+            }
         }
         autoStarted = true
         startForegroundService(Intent(this, AaService::class.java).setAction(AaService.ACTION_LOCAL_ON))
