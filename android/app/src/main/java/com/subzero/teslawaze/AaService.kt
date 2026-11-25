@@ -60,29 +60,55 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
          * the car — or null when no hotspot/AP interface is up. Used both to bind-time report and
          * for the UI to tell whether a hotspot is on.
          */
-        fun hotspotUrl(): String? {
-            return try {
+        /** One IPv4 address the phone holds, with its interface name and a score (higher = more
+         *  likely the hotspot gateway the Tesla should open). */
+        private data class Cand(val iface: String, val ip: String, val score: Int)
+
+        private fun candidates(): List<Cand> {
+            val out = ArrayList<Cand>()
+            try {
                 for (nif in java.net.NetworkInterface.getNetworkInterfaces()) {
                     if (!nif.isUp || nif.isLoopback) continue
                     val name = nif.name.lowercase()
-                    // Match the tethering/AP interface, NOT the normal client Wi-Fi (wlan0). Hotspot
-                    // interfaces are named ap0 / swlan0 / softap… / wlan1 / rndis / usb, and on them
-                    // the phone is the gateway (address ends in .1, Android's default is 192.168.43.1).
+                    // Hotspot/AP interfaces are named ap0 / swlan0 / softap… / wlan1; tethering also
+                    // uses rndis/usb. The normal client Wi-Fi is wlan0; cellular is rmnet*/ccmni*.
                     val apName = name.startsWith("ap") || name.contains("swlan") || name.contains("softap") ||
                         name == "wlan1" || name.startsWith("rndis") || name.startsWith("usb")
+                    val cell = name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("pdp")
                     for (addr in nif.inetAddresses) {
-                        if (addr is java.net.Inet4Address && addr.isSiteLocalAddress) {
-                            val ip = addr.hostAddress ?: continue
-                            val gateway = ip.startsWith("192.168.43.") || Regex("""^192\.168\.\d{1,3}\.1$""").matches(ip)
-                            if (apName || gateway) return "http://$ip:$LOCAL_PORT"
-                        }
+                        if (addr !is java.net.Inet4Address || !addr.isSiteLocalAddress) continue
+                        val ip = addr.hostAddress ?: continue
+                        // The phone-as-AP is the gateway: its address ends in .1 and sits in a private
+                        // LAN range. A 10.x that is NOT .1 is almost always the carrier (cellular) IP.
+                        val isDotOne = Regex("""\.1$""").containsMatchIn(ip)
+                        val lan192 = ip.startsWith("192.168.")
+                        val lan172 = Regex("""^172\.(1[6-9]|2\d|3[01])\.""").containsMatchIn(ip)
+                        val lan10 = ip.startsWith("10.")
+                        var score = 0
+                        if (apName) score += 100
+                        if (cell) score -= 100
+                        if (isDotOne && (lan192 || lan172)) score += 60
+                        if (isDotOne && lan10) score += 25
+                        if (lan192 || lan172) score += 20
+                        if (!isDotOne && lan10) score -= 30 // looks like a CGNAT cellular client address
+                        out.add(Cand(nif.name, ip, score))
                     }
                 }
-                null
-            } catch (e: Exception) {
-                null
-            }
+            } catch (_: Exception) {}
+            return out.sortedByDescending { it.score }
         }
+
+        /** The phone's own hotspot address, as a URL for the Tesla to open — best guess, or null. */
+        fun hotspotUrl(): String? {
+            val best = candidates().firstOrNull() ?: return null
+            // Don't hand back an address that scores as a cellular IP; there's no real hotspot then.
+            if (best.score < 0) return null
+            return "http://${best.ip}:$LOCAL_PORT"
+        }
+
+        /** Every candidate as "iface → http://ip:port", best first — shown so the user can try each. */
+        fun localCandidates(): List<String> =
+            candidates().map { "${it.iface}  →  http://${it.ip}:$LOCAL_PORT" }
     }
 
     private var relay: RelayClient? = null

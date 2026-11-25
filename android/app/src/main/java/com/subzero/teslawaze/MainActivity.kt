@@ -263,10 +263,12 @@ class MainActivity : Activity() {
             setTextIsSelectable(true)
             textDirection = View.TEXT_DIRECTION_LTR
         }
+        localInfo.setOnClickListener { showLocalInfo() }
         localBtn = button("הפעל חיבור מקומי", MINT) { toggleLocal() }
         root.addView(card(false, listOf(
             eyebrow("חיבור מקומי · ללא אינטרנט"),
             localInfo,
+            label("הקש על הכתובת לרשימת כל הכתובות לניסיון", 11.5f, DIM),
             localBtn,
         )))
 
@@ -445,21 +447,24 @@ class MainActivity : Activity() {
 
     private fun showLocalInfo() {
         val url = AaService.hotspotUrl() ?: AaService.localUrl
+        val cands = AaService.localCandidates()
         val msg = if (url != null) {
             "הנקודה החמה משדרת ✓\n\n" +
                 "1) בטסלה: הגדרות ← WiFi, התחבר לרשת של הטלפון.\n" +
-                "   (לא רואה אותה? הגדר בטלפון רצועה 2.4GHz וכבה כיבוי אוטומטי.)\n" +
-                "2) בדפדפן הטסלה פתח את הכתובת:\n\n$url"
+                "2) בדפדפן הטסלה פתח את הכתובת:\n\n$url\n\n" +
+                "אם מקבלים \"ERR_CONNECTION_REFUSED\", זו כנראה הכתובת הלא-נכונה. נסה את האחרות:\n\n" +
+                cands.joinToString("\n")
         } else {
-            "הפעל קודם נקודה חמה (Hotspot) בטלפון. הכתובת לפתיחה בטסלה תופיע בכרטיס \"חיבור מקומי\"."
+            "לא זוהתה כתובת נקודה חמה. אלה כל הכתובות של הטלפון כרגע — נסה כל אחת בדפדפן הטסלה:\n\n" +
+                (if (cands.isEmpty()) "(אין)" else cands.joinToString("\n"))
         }
         AlertDialog.Builder(this)
             .setTitle("חיבור מקומי")
             .setMessage(msg)
             .setPositiveButton("סגור", null)
             .apply {
-                if (url != null) setNeutralButton("שתף כתובת") { _, _ ->
-                    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, url)
+                if (cands.isNotEmpty()) setNeutralButton("שתף כתובות") { _, _ ->
+                    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, msg)
                     startActivity(Intent.createChooser(send, null))
                 }
             }
