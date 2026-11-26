@@ -118,7 +118,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
             return best.values.sortedByDescending { it.score }
         }
 
-        /** 32-bit little-endian hex (as /proc/net/* stores addresses) → dotted IPv4, or null. */
+        /** 32-bit little-endian hex (the form the proc-net tables store addresses in) to dotted IPv4. */
         private fun leHexToIp(hex: String): String? = try {
             val v = hex.toLong(16)
             "${v and 0xFF}.${(v shr 8) and 0xFF}.${(v shr 16) and 0xFF}.${(v shr 24) and 0xFF}"
