@@ -72,11 +72,13 @@ class MainActivity : Activity() {
                 localBtn.text = "כבה חיבור מקומי"
                 val ssid = AaService.lohsSsid
                 val url = AaService.hotspotUrl()
+                val cands = AaService.localCandidates()
                 localInfo.text = when {
                     ssid != null -> "רשת:  $ssid\nסיסמה:  ${AaService.lohsPass}\n${url ?: "http://192.168.49.1:8080"}"
-                    url != null -> "כתובת לטסלה:\n$url"
+                    url != null -> "כתובת לטסלה:\n$url" + if (cands.size > 1) "\n(הקש לעוד כתובות)" else ""
+                    cands.isNotEmpty() -> "נסה בטסלה:\n" + cands.joinToString("\n")
                     AaService.lohsError != null -> AaService.lohsError
-                    else -> "ממתין לכתובת… ודא שהטלפון מחובר ל-Wi-Fi"
+                    else -> "ממתין לכתובת… ודא שההוטספוט דלוק"
                 }
             } else {
                 localBtn.text = "הפעל חיבור מקומי"

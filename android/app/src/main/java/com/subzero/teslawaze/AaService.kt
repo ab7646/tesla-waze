@@ -104,7 +104,83 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
                     }
                 }
             } catch (_: Exception) {}
-            return out.sortedByDescending { it.score }
+            // Samsung (and some others) hide the soft-AP interface from NetworkInterface, so the
+            // address loop above finds nothing useful. Recover the hotspot subnet from the kernel
+            // routing table and the ARP table, which stay readable, and offer its .1 gateway.
+            out.addAll(routeGateways())
+            out.addAll(arpGateways())
+            // De-duplicate by IP, keeping the highest score for each.
+            val best = LinkedHashMap<String, Cand>()
+            for (c in out) {
+                val ex = best[c.ip]
+                if (ex == null || c.score > ex.score) best[c.ip] = c
+            }
+            return best.values.sortedByDescending { it.score }
+        }
+
+        /** 32-bit little-endian hex (as /proc/net/* stores addresses) → dotted IPv4, or null. */
+        private fun leHexToIp(hex: String): String? = try {
+            val v = hex.toLong(16)
+            "${v and 0xFF}.${(v shr 8) and 0xFF}.${(v shr 16) and 0xFF}.${(v shr 24) and 0xFF}"
+        } catch (_: Exception) { null }
+
+        private fun isLan(ip: String): Int = when {
+            ip.startsWith("192.168.") -> 192
+            Regex("""^172\.(1[6-9]|2\d|3[01])\.""").containsMatchIn(ip) -> 172
+            ip.startsWith("10.") -> 10
+            else -> 0
+        }
+
+        private fun isCell(name: String): Boolean =
+            name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("pdp")
+
+        private fun isApName(name: String): Boolean =
+            name.startsWith("ap") || name.contains("swlan") || name.contains("softap") ||
+                name == "wlan1" || name.startsWith("rndis") || name.startsWith("usb")
+
+        /** Gateway candidates from /proc/net/route — reveals the hotspot subnet even when its
+         *  interface is invisible to NetworkInterface. Each non-default LAN route yields its .1. */
+        private fun routeGateways(): List<Cand> {
+            val out = ArrayList<Cand>()
+            try {
+                java.io.File("/proc/net/route").forEachLine { line ->
+                    val f = line.trim().split(Regex("\\s+"))
+                    if (f.size < 8 || f[0].equals("Iface", true)) return@forEachLine
+                    val name = f[0].lowercase()
+                    if (f[1].equals("00000000", true)) return@forEachLine // default route
+                    if (isCell(name)) return@forEachLine
+                    val net = leHexToIp(f[1]) ?: return@forEachLine
+                    val lan = isLan(net)
+                    if (lan == 0) return@forEachLine
+                    val p = net.split(".")
+                    if (p.size != 4) return@forEachLine
+                    var score = 40
+                    if (isApName(name)) score += 80
+                    if (lan == 192 || lan == 172) score += 20
+                    out.add(Cand(f[0], "${p[0]}.${p[1]}.${p[2]}.1", score))
+                }
+            } catch (_: Exception) {}
+            return out
+        }
+
+        /** Gateway candidates inferred from /proc/net/arp — once the Tesla has associated, its
+         *  address appears here and tells us the hotspot subnet. */
+        private fun arpGateways(): List<Cand> {
+            val out = ArrayList<Cand>()
+            try {
+                java.io.File("/proc/net/arp").forEachLine { line ->
+                    val f = line.trim().split(Regex("\\s+"))
+                    if (f.size < 6 || f[0].equals("IP", true)) return@forEachLine
+                    val name = f[5].lowercase()
+                    if (isCell(name)) return@forEachLine
+                    val lan = isLan(f[0])
+                    if (lan == 0) return@forEachLine
+                    val p = f[0].split(".")
+                    if (p.size != 4) return@forEachLine
+                    out.add(Cand("${f[5]} (arp)", "${p[0]}.${p[1]}.${p[2]}.1", 55))
+                }
+            } catch (_: Exception) {}
+            return out
         }
 
         /** The phone's own hotspot address, as a URL for the Tesla to open — best guess, or null. */
