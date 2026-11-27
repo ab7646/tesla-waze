@@ -63,6 +63,9 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         @Volatile var lohsSsid: String? = null
         @Volatile var lohsPass: String? = null
         @Volatile var lohsError: String? = null
+        /** Diagnostics: the last inbound TCP connection we saw (who reached us, and on which of our
+         *  own addresses), so we can tell whether the Tesla's packets arrive at the phone at all. */
+        @Volatile var lastInbound: String? = null
 
         /**
          * The phone's own address on its Wi-Fi hotspot (the Tesla's gateway), as a URL to open in
@@ -211,6 +214,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
     @Volatile private var relayPresent = false
     @Volatile private var localPresent = false
     private var lohsReservation: WifiManager.LocalOnlyHotspotReservation? = null
+    @Volatile private var probe: java.net.ServerSocket? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -459,6 +463,7 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
                 localServer = srv
                 localActive = true
                 AppLog.add("שרת מקומי פעיל")
+                startProbe()
             } catch (e: Exception) {
                 AppLog.add("הפעלת שרת מקומי נכשלה: ${e.javaClass.simpleName}: ${e.message}")
                 return
@@ -533,7 +538,50 @@ class AaService : Service(), RelayClient.Listener, HeadUnit.Listener {
         }
     }
 
+    /**
+     * A bare TCP listener on LOCAL_PORT+1 that answers any connection with a plain-text page and
+     * records who reached it. It shares nothing with NanoHTTPD, so if the Tesla can open :8081 but
+     * not :8080 the fault is ours; if it cannot open :8081 either, the hotspot itself is blocking
+     * the phone (carrier passthrough / client isolation).
+     */
+    private fun startProbe() {
+        if (probe != null) return
+        try {
+            val sock = java.net.ServerSocket()
+            sock.reuseAddress = true
+            sock.bind(java.net.InetSocketAddress(LOCAL_PORT + 1))
+            probe = sock
+            Thread({
+                while (true) {
+                    val c = try { sock.accept() } catch (_: Exception) { break }
+                    try {
+                        val who = (c.inetAddress?.hostAddress ?: "?") + " → " + (c.localAddress?.hostAddress ?: "?")
+                        lastInbound = "$who  ${timeHm()}"
+                        AppLog.add("גשש: חיבור נכנס $who")
+                        val body = "PROBE OK\nfrom ${c.inetAddress?.hostAddress}\nto ${c.localAddress?.hostAddress}\n"
+                        c.getOutputStream().write(
+                            ("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n" +
+                                "Content-Length: ${body.toByteArray().size}\r\n\r\n$body").toByteArray()
+                        )
+                        c.getOutputStream().flush()
+                    } catch (_: Exception) {} finally { try { c.close() } catch (_: Exception) {} }
+                }
+            }, "diag-probe").start()
+        } catch (e: Exception) {
+            AppLog.add("גשש לא נפתח: ${e.message}")
+        }
+    }
+
+    private fun timeHm(): String {
+        val c = java.util.Calendar.getInstance()
+        return String.format("%02d:%02d:%02d", c.get(java.util.Calendar.HOUR_OF_DAY),
+            c.get(java.util.Calendar.MINUTE), c.get(java.util.Calendar.SECOND))
+    }
+
     private fun stopLocal() {
+        probe?.let { try { it.close() } catch (_: Exception) {} }
+        probe = null
+        lastInbound = null
         localServer?.let { try { it.stop() } catch (_: Exception) {} }
         localServer = null
         lohsReservation?.let { try { it.close() } catch (_: Exception) {} }

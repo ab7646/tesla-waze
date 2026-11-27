@@ -80,6 +80,7 @@ class MainActivity : Activity() {
                     AaService.lohsError != null -> AaService.lohsError
                     else -> "ממתין לכתובת… ודא שההוטספוט דלוק"
                 }
+                AaService.lastInbound?.let { localInfo.append("\n— — —\nחיבור נכנס אחרון:\n$it") }
             } else {
                 localBtn.text = "הפעל חיבור מקומי"
                 localInfo.text = "מריץ שרת על הרשת שהטלפון מחובר אליה"

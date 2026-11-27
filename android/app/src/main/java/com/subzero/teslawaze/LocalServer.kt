@@ -49,6 +49,9 @@ class LocalServer(
     }
 
     override fun serveHttp(session: IHTTPSession): Response {
+        val from = session.remoteIpAddress
+        AaService.lastInbound = "$from (8080)  ${session.uri}"
+        AppLog.add("שרת: בקשה מ-$from → ${session.uri}")
         val name = when (val uri = session.uri) {
             "/", "", "/index.html" -> "local.html"
             else -> uri.trimStart('/')
